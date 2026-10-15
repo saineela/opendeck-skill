@@ -1,0 +1,844 @@
+{
+  "schema_version": 1,
+  "kind": "nix-skill",
+  "id": "opendeck",
+  "name": "OpenDeck",
+  "version": "1.22.0",
+  "description": "Play the music in a self-hosted OpenDeck server: search, play a requested song on the unit, keep a shuffle/repeat queue, like or file the playing track, and fill the console's Music page with now-playing, the queue and synchronized lyrics. Ships the PUCA Panel: the wall display, where an unclear request becomes a choice rather than a guess, the music cards are sized to be read across a room (the player is not), and a wall left on refreshes itself onto a new panel.",
+  "assistant_summary": "You are OpenDeck, the user's music service. Actions: search (query), now_playing, library (kind: playlists/playlist/likes/history/frequent/stats), play (query or video_id), queue (op: add/list/remove/clear/next/play/move/front/next_up/shuffle/repeat/add_range), save (like/unlike/playlist_create/playlist_add), lyrics. 'my playlists' is kind 'playlists' (artwork_url), 'my liked songs' 'likes', 'my history' 'history', 'my most played' / 'what do I play most' 'frequent' (each track has its play count). Queue: 'queue <song>' / 'add <song> to my queue' are 'add'; \"what's in my queue\" is 'list'; 'play <song> next/first' are 'next_up'/'front'; 'play the next queued track' is 'next'; 'remove <song> from the queue' is 'remove'; 'clear the queue' is 'clear'; shuffle/repeat are 'shuffle'/'repeat' (omit to toggle). 'like this song' / 'add this to my liked music' are 'like'; 'add this to <playlist>' is 'playlist_add' with name=<playlist> (found or created); 'this song' is the one playing, so no video_id. Never add to Liked Music (\"LM\"); that is 'like'. \"what's playing\" is 'now_playing'; 'search for <song>' is 'search', not 'play'; use 'play' only when asked. It also fills the Music page.",
+  "category": "Music",
+  "publisher": "NIX Community Skills",
+  "license": "MIT",
+  "icon": "♫",
+  "tags": [
+    "music",
+    "opendeck",
+    "youtube-music",
+    "player",
+    "self-hosted",
+    "Music",
+    "Media",
+    "Lyrics"
+  ],
+  "permissions": [
+    "Read the linked YouTube Music account's library (playlists, liked songs) through the OpenDeck server it is linked to.",
+    "Read and write the configured OpenDeck account's library through its HTTP API using the stored API key.",
+    "Resolve playable audio stream URLs through the OpenDeck server's own catalog and media endpoints.",
+    "Run the installed worker subprocess with the NIX user's OS permissions; this is not sandboxed.",
+    "Serve the declared music page assets (ui/music.js, ui/music.css) to the NIX console dashboard; that code runs at the console origin, under the same explicit digest trust as the worker.",
+    "Answer the console music API (now playing, search, play, library, lyrics, play queue) for the dashboard and the paired NIX Home mobile app.",
+    "Keep a play queue of requested tracks in a small JSON file under the NIX data directory.",
+    "Fetch synchronized lyrics from LRCLIB through the configured OpenDeck server's allowlisted proxy."
+  ],
+  "setup_fields": [
+    {
+      "id": "server_url",
+      "label": "OpenDeck server address",
+      "type": "string",
+      "required": true,
+      "help": "Address of the OpenDeck instance, e.g. http://192.168.0.152:4100 or https://music.example.com. Include the port if it is not 80/443."
+    },
+    {
+      "id": "api_key",
+      "label": "OpenDeck API key",
+      "type": "string",
+      "required": true,
+      "help": "Create one under Settings → API; it looks like odk_… NIX's secret field only takes 32-byte base64 device keys, so this key is stored as plain setup text in the skill's private 0600 config file."
+    }
+  ],
+  "runtime": {
+    "protocol": "nix-skill-jsonl-v1",
+    "entrypoint": "opendeck_worker.py",
+    "autostart": false
+  },
+  "tools": [
+    {
+      "name": "opendeck_music",
+      "description": "Search the OpenDeck music service, browse the linked account's playlists (including its Liked Music auto playlist), likes and history, resolve a requested song to a device-ready OpenDeck stream URL, or save/remove likes and playlists.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "search",
+              "library",
+              "play",
+              "save",
+              "lyrics",
+              "queue",
+              "now_playing"
+            ]
+          },
+          "query": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "video_id": {
+            "type": "string",
+            "maxLength": 64
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "playlists",
+              "playlist",
+              "likes",
+              "history",
+              "frequent",
+              "stats",
+              "like",
+              "unlike",
+              "playlist_create",
+              "playlist_add"
+            ]
+          },
+          "playlist_id": {
+            "type": "string",
+            "maxLength": 100
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 120
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 300
+          },
+          "artist": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "album": {
+            "type": "string",
+            "maxLength": 300
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500
+          },
+          "duration_sec": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100000
+          },
+          "op": {
+            "type": "string",
+            "enum": [
+              "list",
+              "add",
+              "remove",
+              "clear",
+              "next",
+              "play",
+              "move",
+              "front",
+              "next_up",
+              "shuffle",
+              "repeat",
+              "add_range"
+            ]
+          },
+          "index": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 99
+          },
+          "to": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 99
+          },
+          "on": {
+            "type": "boolean"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "off",
+              "all",
+              "one"
+            ]
+          },
+          "auto": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "additionalProperties": false,
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "search"
+                ]
+              },
+              "query": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 12
+              }
+            },
+            "required": [
+              "action",
+              "query"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "library"
+                ]
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "playlists",
+                  "playlist",
+                  "likes",
+                  "history",
+                  "frequent",
+                  "stats"
+                ]
+              },
+              "playlist_id": {
+                "type": "string",
+                "maxLength": 100
+              },
+              "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 500
+              }
+            },
+            "required": [
+              "action",
+              "kind"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "play"
+                ]
+              },
+              "query": {
+                "type": "string",
+                "maxLength": 200
+              },
+              "video_id": {
+                "type": "string",
+                "maxLength": 64
+              }
+            },
+            "required": [
+              "action"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "save"
+                ]
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "like",
+                  "unlike",
+                  "playlist_create",
+                  "playlist_add"
+                ]
+              },
+              "video_id": {
+                "type": "string",
+                "maxLength": 64
+              },
+              "playlist_id": {
+                "type": "string",
+                "maxLength": 100
+              },
+              "name": {
+                "type": "string",
+                "maxLength": 120
+              },
+              "title": {
+                "type": "string",
+                "maxLength": 300
+              },
+              "artist": {
+                "type": "string",
+                "maxLength": 200
+              },
+              "album": {
+                "type": "string",
+                "maxLength": 300
+              }
+            },
+            "required": [
+              "action",
+              "kind"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "lyrics"
+                ]
+              },
+              "video_id": {
+                "type": "string",
+                "maxLength": 64
+              },
+              "title": {
+                "type": "string",
+                "maxLength": 300
+              },
+              "artist": {
+                "type": "string",
+                "maxLength": 200
+              },
+              "album": {
+                "type": "string",
+                "maxLength": 300
+              },
+              "duration_sec": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 100000
+              }
+            },
+            "required": [
+              "action"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "queue"
+                ]
+              },
+              "op": {
+                "type": "string",
+                "enum": [
+                  "list",
+                  "add",
+                  "remove",
+                  "clear",
+                  "next",
+                  "play",
+                  "move",
+                  "front",
+                  "next_up",
+                  "shuffle",
+                  "repeat",
+                  "add_range"
+                ]
+              },
+              "query": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "video_id": {
+                "type": "string",
+                "maxLength": 64
+              },
+              "playlist_id": {
+                "type": "string",
+                "maxLength": 100
+              },
+              "index": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 99
+              },
+              "to": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 99
+              },
+              "on": {
+                "type": "boolean"
+              },
+              "mode": {
+                "type": "string",
+                "enum": [
+                  "off",
+                  "all",
+                  "one"
+                ]
+              },
+              "auto": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "action",
+              "op"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "now_playing"
+                ]
+              },
+              "video_id": {
+                "type": "string",
+                "maxLength": 64
+              }
+            },
+            "required": [
+              "action"
+            ]
+          }
+        ]
+      },
+      "result_schema": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "action": {
+            "type": "string",
+            "maxLength": 32
+          },
+          "message": {
+            "type": "string",
+            "maxLength": 400
+          },
+          "connected": {
+            "type": "boolean"
+          },
+          "instance": {
+            "type": "string",
+            "maxLength": 120
+          },
+          "user": {
+            "type": "string",
+            "maxLength": 80
+          },
+          "video_id": {
+            "type": "string",
+            "maxLength": 64
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 300
+          },
+          "artist": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "album": {
+            "type": "string",
+            "maxLength": 300
+          },
+          "duration_sec": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100000
+          },
+          "artwork_url": {
+            "type": "string",
+            "maxLength": 600
+          },
+          "mime_type": {
+            "type": "string",
+            "maxLength": 80
+          },
+          "play_url": {
+            "type": "string",
+            "maxLength": 2000
+          },
+          "tracks": {
+            "type": "array",
+            "maxItems": 500,
+            "items": {
+              "type": "object",
+              "properties": {
+                "video_id": {
+                  "type": "string",
+                  "maxLength": 64
+                },
+                "title": {
+                  "type": "string",
+                  "maxLength": 300
+                },
+                "artist": {
+                  "type": "string",
+                  "maxLength": 200
+                },
+                "album": {
+                  "type": "string",
+                  "maxLength": 300
+                },
+                "duration_sec": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 100000
+                },
+                "artwork_url": {
+                  "type": "string",
+                  "maxLength": 600
+                },
+                "plays": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 1000000
+                }
+              },
+              "required": [
+                "video_id",
+                "title",
+                "artist",
+                "album",
+                "duration_sec",
+                "artwork_url"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "playlists": {
+            "type": "array",
+            "maxItems": 500,
+            "items": {
+              "type": "object",
+              "properties": {
+                "playlist_id": {
+                  "type": "string",
+                  "maxLength": 100
+                },
+                "name": {
+                  "type": "string",
+                  "maxLength": 300
+                },
+                "track_count": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 100000
+                },
+                "artwork_url": {
+                  "type": "string",
+                  "maxLength": 600
+                }
+              },
+              "required": [
+                "playlist_id",
+                "name",
+                "track_count",
+                "artwork_url"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "queue": {
+            "type": "array",
+            "maxItems": 100,
+            "items": {
+              "type": "object",
+              "properties": {
+                "video_id": {
+                  "type": "string",
+                  "maxLength": 64
+                },
+                "title": {
+                  "type": "string",
+                  "maxLength": 300
+                },
+                "artist": {
+                  "type": "string",
+                  "maxLength": 200
+                },
+                "album": {
+                  "type": "string",
+                  "maxLength": 300
+                },
+                "duration_sec": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 100000
+                },
+                "artwork_url": {
+                  "type": "string",
+                  "maxLength": 600
+                }
+              },
+              "required": [
+                "video_id",
+                "title",
+                "artist",
+                "album",
+                "duration_sec",
+                "artwork_url"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "queue_index": {
+            "type": "integer",
+            "minimum": -1,
+            "maximum": 100
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100000
+          },
+          "lyrics": {
+            "type": "array",
+            "maxItems": 400,
+            "items": {
+              "type": "object",
+              "properties": {
+                "time_sec": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 100000
+                },
+                "text": {
+                  "type": "string",
+                  "maxLength": 400
+                }
+              },
+              "required": [
+                "time_sec",
+                "text"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "lyrics_plain": {
+            "type": "string",
+            "maxLength": 8000
+          },
+          "lyrics_timing": {
+            "type": "string",
+            "maxLength": 16
+          },
+          "lyrics_source": {
+            "type": "string",
+            "maxLength": 40
+          },
+          "shuffle": {
+            "type": "boolean"
+          },
+          "repeat": {
+            "type": "string",
+            "maxLength": 8
+          },
+          "ambiguous": {
+            "type": "boolean"
+          },
+          "query": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "options": {
+            "type": "array",
+            "maxItems": 4,
+            "items": {
+              "type": "object",
+              "properties": {
+                "video_id": {
+                  "type": "string",
+                  "maxLength": 64
+                },
+                "title": {
+                  "type": "string",
+                  "maxLength": 300
+                },
+                "artist": {
+                  "type": "string",
+                  "maxLength": 200
+                },
+                "album": {
+                  "type": "string",
+                  "maxLength": 300
+                },
+                "duration_sec": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 86400
+                },                "artwork_url": {
+                  "type": "string",
+                  "maxLength": 600
+                }
+              },
+              "required": [
+                "video_id",
+                "title",
+                "artist",
+                "album",
+                "duration_sec",
+                "artwork_url"
+              ],
+              "additionalProperties": false
+            }
+          }
+
+
+        },
+        "required": [
+          "ok",
+          "action",
+          "message",
+          "connected",
+          "instance",
+          "user",
+          "video_id",
+          "title",
+          "artist",
+          "album",
+          "duration_sec",
+          "artwork_url",
+          "mime_type",
+          "play_url",
+          "tracks",
+          "playlists",
+          "queue",
+          "queue_index",
+          "count",
+          "lyrics",
+          "lyrics_plain",
+          "lyrics_timing",
+          "lyrics_source",
+          "shuffle",
+          "repeat",
+          "ambiguous",
+          "query",
+          "options"
+        ],
+        "additionalProperties": false
+      }
+    }
+  ],
+  "triggers": [
+    "opendeck",
+    "play music",
+    "play a song",
+    "put on some music",
+    "my music library",
+    "liked songs",
+    "listening history",
+    "most played",
+    "frequently played",
+    "my playlists",
+    "queue",
+    "add to the queue",
+    "play next",
+    "next track",
+    "skip track",
+    "play this next",
+    "lyrics",
+    "now playing",
+    "what's playing",
+    "shuffle",
+    "shuffle the queue",
+    "repeat this song",
+    "repeat the queue",
+    "stop repeating"
+  ],
+  "files": [
+    "SKILL.md",
+    "README.md",
+    "LICENSE",
+    "opendeck_worker.py",
+    "ui/music.js",
+    "ui/music.css",
+    "PUCA-Panel/panel.html",
+    "PUCA-Panel/panel.css",
+    "PUCA-Panel/panel.js",
+    "PUCA-Panel/puca-logo.png",
+    "PUCA-Panel/screensaver.html",
+    "PUCA-Panel/fonts.css",
+    "PUCA-Panel/fonts/outfit-latin.woff2",
+    "PUCA-Panel/fonts/outfit-latin-ext.woff2",
+    "PUCA-Panel/fonts/baloo2-latin.woff2",
+    "PUCA-Panel/fonts/nunito-latin.woff2"
+  ],
+  "device_ui": {
+    "page": {
+      "id": "music",
+      "title": "Music",
+      "script": "ui/music.js",
+      "styles": [
+        "ui/music.css"
+      ]
+    },
+    "media": {
+      "provider": {
+        "search": {
+          "tool": "opendeck_music",
+          "arguments": {
+            "action": "search"
+          }
+        },
+        "play": {
+          "tool": "opendeck_music",
+          "arguments": {
+            "action": "play"
+          }
+        },
+        "library": {
+          "tool": "opendeck_music",
+          "arguments": {
+            "action": "library",
+            "kind": "playlists",
+            "limit": 12
+          }
+        },
+        "queue": {
+          "tool": "opendeck_music",
+          "arguments": {
+            "action": "queue",
+            "op": "list"
+          }
+        },
+        "lyrics": {
+          "tool": "opendeck_music",
+          "arguments": {
+            "action": "lyrics"
+          }
+        },
+        "save": {
+          "tool": "opendeck_music",
+          "arguments": {
+            "action": "save"
+          }
+        }
+      }
+    }
+  }
+}

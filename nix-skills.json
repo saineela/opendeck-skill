@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "kind": "nix-skills-repository",
+  "name": "NIX OpenDeck Skill",
+  "description": "Play the music in a self-hosted OpenDeck server on your NIX device: search the catalog, browse playlists, likes and history, and play a requested song on the unit.",
+  "publisher": "NIX Community Skills",
+  "skills": [
+    {
+      "manifest": "skills/opendeck/skill.json"
+    }
+  ]
+}

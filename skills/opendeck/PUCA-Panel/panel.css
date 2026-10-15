@@ -1,0 +1,998 @@
+/* ==========================================================================
+   PUCA Panel — styles.css
+   The Nix display for OpenDeck. Built for a wall: everything is big, every
+   target is fat, and the palette flips itself at 22:00 / 06:00.
+
+   SIZES. Every component is sized by a fluid clamp(<floor>px, <share>vw,
+   <ceiling>px) rather than by a fixed font size, so it grows with the glass it
+   is on and stops growing once it is already readable from the sofa. The whole
+   set was raised by 12% on request — the wall it is mounted on is read from
+   further back than the design assumed — so the numbers below are the design's
+   own times 1.12. Raising them again is the same edit: multiply every clamp
+   (and the two contain-intrinsic-size estimates) by the new factor. What a
+   clamp is *not* allowed to touch is left alone: hairlines and shadows stay
+   1px-ish, and the `96vw` / `95vw` bounds that keep a sheet on the glass stay
+   exactly where they were, because a box wider than the screen is a box off
+   the screen.
+   ========================================================================== */
+
+:root {
+  --font: "Outfit", ui-rounded, "SF Pro Rounded", "Segoe UI Variable Display",
+          system-ui, -apple-system, sans-serif;
+  /* --accent and --accent-ink are per-theme: the Nix panel is black and white,
+     so the "accent" is simply the foreground colour. */
+  --radius: clamp(16px, 1.68vw, 29px);
+  --radius-s: clamp(11px, 1.12vw, 18px);
+  --gap: clamp(13px, 1.68vw, 29px);
+  --pad: clamp(16px, 2.02vw, 38px);
+  --ease: cubic-bezier(.22, .9, .3, 1);
+  --bounce: cubic-bezier(.2, 1.3, .4, 1);
+  --shadow: 0 24px 60px rgba(0, 0, 0, .45);
+}
+
+/* ---------------------------------------------------------------- night */
+:root.night {
+  --bg: #04050a;
+  --bg-2: #0d0d12;
+  --ink: #ffffff;
+  --accent: #ffffff;
+  --accent-ink: #04050a;
+  --panel: rgba(255, 255, 255, .055);
+  --panel-2: rgba(255, 255, 255, .10);
+  --line: rgba(255, 255, 255, .14);
+  --text: #ffffff;
+  --muted: rgba(255, 255, 255, .60);
+  --muted-2: rgba(255, 255, 255, .34);
+  --scrim: rgba(4, 5, 10, .90);
+  --knob: #ffffff;
+}
+
+/* ------------------------------------------------------------------ day */
+:root.day {
+  --bg: #ffffff;
+  --bg-2: #ffffff;
+  --ink: #0b0b12;
+  --accent: #0b0b12;
+  --accent-ink: #ffffff;
+  --panel: rgba(11, 11, 18, .05);
+  --panel-2: rgba(11, 11, 18, .09);
+  --line: rgba(11, 11, 18, .14);
+  --text: #0b0b12;
+  --muted: rgba(11, 11, 18, .62);
+  --muted-2: rgba(11, 11, 18, .38);
+  --scrim: rgba(255, 255, 255, .95);
+  --knob: #0b0b12;
+  --shadow: 0 20px 50px rgba(0, 0, 0, .14);
+}
+
+/* ---------------------------------------------------------------- base */
+*, *::before, *::after { box-sizing: border-box; }
+
+/* The 22:00 / 06:00 cross-fade, applied ONLY while it is happening. A permanent
+   global transition made every tap feel a beat behind and had the browser
+   animating every repaint for the whole life of the panel. */
+html.theming *, html.theming *::before, html.theming *::after {
+  transition: background-color .9s ease, border-color .9s ease, color .9s ease,
+              box-shadow .9s ease, fill .9s ease, stroke .9s ease !important;
+}
+
+html, body { height: 100%; }
+body {
+  margin: 0;
+  background: var(--bg);
+  background-image:
+    radial-gradient(1200px 700px at 12% -10%, color-mix(in oklab, var(--ink) 8%, transparent), transparent 70%),
+    radial-gradient(900px 600px at 100% 0%, color-mix(in oklab, var(--ink) 4%, transparent), transparent 65%);
+  background-attachment: fixed;
+  color: var(--text);
+  font-family: var(--font);
+  font-weight: 600;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  overflow: hidden;
+  touch-action: manipulation;
+  overscroll-behavior: none;
+  -webkit-user-select: none; user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+body.idle { cursor: none; }
+body.idle .drift { opacity: .999; }           /* keeps compositor awake, no visible change */
+
+/* The overlays below set their own `display`, which would beat the UA rule for
+   the `hidden` attribute — so `hidden` has to win explicitly here. */
+[hidden] { display: none !important; }
+
+h1, h2, h3, p, ol, li { margin: 0; }
+button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
+input { font: inherit; }
+img { display: block; max-width: 100%; }
+
+/* A slow, tiny drift so no pixel of a 24/7 panel burns in. */
+.drift {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  animation: drift 900s ease-in-out infinite;
+}
+@keyframes drift {
+  0%   { transform: translate(0, 0); }
+  20%  { transform: translate(6px, -4px); }
+  40%  { transform: translate(-4px, -7px); }
+  60%  { transform: translate(-7px, 3px); }
+  80%  { transform: translate(4px, 6px); }
+  100% { transform: translate(0, 0); }
+}
+
+/* ==========================================================================
+   TOP BAR
+   ========================================================================== */
+.top {
+  flex: 0 0 auto;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--gap);
+  padding: clamp(11px, 1.34vw, 25px) var(--pad);
+}
+
+.brand { display: flex; align-items: center; gap: clamp(9px, 1.01vw, 18px); }
+/* The brand is the logo itself — no plate, no elevation, no wording beside it
+   (the design's "PUCA" and "Nix display for OpenDeck" lines are gone). The
+   artwork ships as a one-colour mark with its own transparency, so it is drawn
+   straight onto the page and tinted into the theme's own foreground: white on
+   the night panel, near-black on the day one. The panel's note mark stays in
+   the markup underneath as the fallback for a file that cannot be read
+   (`panel.js` reports which of the two is up). */
+.brand .logo { display: grid; place-items: center; color: var(--text); }
+.brand .logo img {
+  display: block; height: clamp(27px, 2.46vw, 49px); width: auto;
+  filter: brightness(0) invert(1);
+}
+:root.day .brand .logo img { filter: brightness(0); }
+.brand .logo.has-logo svg { display: none; }
+.brand .logo svg { width: clamp(25px, 2.24vw, 43px); height: clamp(25px, 2.24vw, 43px); }
+
+/* ------------------------------------------------------------- searchbar */
+.searchbar {
+  display: flex; align-items: center; gap: clamp(6.7px, .78vw, 16px);
+  padding: clamp(6.7px, .67vw, 13px);
+  padding-left: clamp(13px, 1.34vw, 27px);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel-2);
+  min-width: 0;
+}
+.searchbar:focus-within {
+  border-color: color-mix(in oklab, var(--accent) 60%, transparent);
+  background: var(--panel-2);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent) 18%, transparent);
+}
+.searchbar .lens { width: clamp(20px, 1.68vw, 34px); color: var(--muted); flex: 0 0 auto; }
+.searchbar input {
+  flex: 1 1 auto; min-width: 0;
+  background: none; border: 0; outline: 0; color: var(--text);
+  font-size: clamp(17px, 1.51vw, 31px); font-weight: 600;
+  padding: clamp(6.7px, .56vw, 13px) 0;
+}
+.searchbar input::placeholder { color: var(--muted-2); }
+.searchbar input::-webkit-search-cancel-button { display: none; }
+
+.searchbar .mic {
+  position: relative; flex: 0 0 auto;
+  display: grid; place-items: center;
+  width: clamp(43px, 3.58vw, 67px); height: clamp(43px, 3.58vw, 67px);
+  border-radius: 50%;
+  background: var(--panel-2);
+  color: var(--text);
+}
+.searchbar .mic svg { width: 52%; }
+.searchbar .mic:hover { background: color-mix(in oklab, var(--accent) 26%, transparent); }
+.searchbar .mic .pulse {
+  position: absolute; inset: -4px; border-radius: 50%;
+  border: 2px solid var(--accent); opacity: 0; pointer-events: none;
+}
+.searchbar .mic.listening { background: var(--accent); color: var(--accent-ink); }
+.searchbar .mic.listening .pulse { animation: pulse 1.4s ease-out infinite; }
+/* While the console is the one listening, the ring breathes with the voice
+   instead of pulsing on a timer: the person across the room gets an answer to
+   "is this thing hearing me?" without reading anything. */
+.searchbar .mic.recording .pulse {
+  inset: -7px; opacity: .8; animation: none;
+  transform: scale(calc(1 + var(--mic-level, 0) * .5));
+  transition: transform .1s linear;
+}
+@keyframes pulse {
+  0%   { opacity: .9; transform: scale(1); }
+  100% { opacity: 0;  transform: scale(1.5); }
+}
+
+.searchbar .go {
+  flex: 0 0 auto;
+  padding: clamp(9px, .78vw, 18px) clamp(18px, 1.68vw, 36px);
+  border-radius: 999px;
+  background: var(--accent); color: var(--accent-ink);
+  font-weight: 800; font-size: clamp(15px, 1.18vw, 25px);
+}
+.searchbar .go:hover { filter: brightness(1.08); }
+
+/* ---------------------------------------------------------------- clock */
+.clockbox { display: flex; align-items: baseline; gap: clamp(4.5px, .56vw, 11px); }
+.clockbox .t {
+  font-size: clamp(25px, 2.69vw, 54px); font-weight: 800;
+  font-variant-numeric: tabular-nums; letter-spacing: .01em;
+}
+.clockbox .ap { font-size: clamp(12px, 1.12vw, 22px); color: var(--muted); letter-spacing: .14em; }
+.clockbox .daylight { display: none; }
+
+/* ==========================================================================
+   GRID
+   ========================================================================== */
+.grid {
+  flex: 1 1 auto; min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(240px, 24vw);
+  gap: var(--gap);
+  padding: 0 var(--pad) var(--pad);
+  min-width: 0;
+}
+
+/* The left column is a flex column on purpose. With a `1fr` grid row beside a
+   span-two sidebar, the hero took the entire height and the playlist shelves
+   collapsed to 0px; flex + min-height:0 cannot fail that way.
+
+   THE PLAYER FOLDS AWAY BY BEING SCROLLED. The wall is one screen: the
+   now-playing card takes the top of the music column and the shelves take the
+   rest, so scrolling down to the music takes the card up and out of the way and
+   scrolling back to the top brings it down again. That used to be a fold of its
+   own — the card's height animated away over 450ms, with the shelves growing by
+   the height it gave back — and on a wall with no headroom to spare it was the
+   worst thing on the screen: measured with the CPU throttled to a small
+   computer's, 74% of that animation was spent in frames longer than 33ms, with
+   a 133ms frame in the middle of it, because animating a height re-lays out the
+   whole column and repaints the card on every single frame.
+
+   A scroll has none of that: the card is simply the first thing in the column's
+   own scroller, the browser moves it on the compositor, and there is no height
+   to lay out, no threshold to cross, and nothing to flicker. It also gives the
+   music more room than the fold did — the whole column instead of the column
+   minus a gap. `?fold=0` pins the card and gives the music its own scroller
+   underneath it, which is what the wall did before. */
+.left {
+  display: flex; flex-direction: column; gap: var(--gap);
+  min-height: 0; min-width: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  /* room for the bar below, so the music does not sit under it */
+  padding-right: 4px;
+}
+
+/* `?fold=0`: the card stays where it is and the music scrolls under it. */
+body.fold-off .left { overflow: hidden; padding-right: 0; }
+body.fold-off .shelves { flex: 1 1 auto; overflow-y: auto; min-height: 0; padding-right: 4px; }
+
+/* ==========================================================================
+   HERO — now playing
+   ========================================================================== */
+.hero {
+  flex: 0 0 auto;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: clamp(18px, 2.24vw, 49px);
+  align-items: center;
+  padding: clamp(16px, 1.79vw, 34px);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+  min-height: 0;
+}
+
+
+.artwrap { position: relative; display: grid; place-items: center; }
+.art {
+  position: relative; z-index: 1;
+  width: clamp(123px, 14.56vw, 291px);
+  aspect-ratio: 1;
+  border-radius: var(--radius);
+  overflow: hidden;
+  display: grid; place-items: center;
+  background: linear-gradient(155deg, var(--panel-2), var(--panel));
+  box-shadow: var(--shadow);
+  transition: background 1.2s ease, box-shadow 1.2s ease;
+}
+.art img { width: 100%; height: 100%; object-fit: cover; }
+.art .glyph {
+  font-size: clamp(43px, 5.6vw, 123px); font-weight: 900;
+  color: var(--text);
+  opacity: .58;
+}
+/* A soft radial gradient instead of a blurred block: identical look, no
+   70px blur rasterised behind the panel on every frame. */
+.hero .glow {
+  position: absolute; inset: -22%;
+  z-index: 0;
+  opacity: .5;
+  transition: background 1.2s ease;
+}
+
+.meta { display: flex; flex-direction: column; gap: clamp(3.4px, .56vw, 11px); min-width: 0; }
+.meta .eyebrow {
+  display: flex; align-items: center; gap: 10px;
+  font-size: clamp(12px, 1.06vw, 21px); font-weight: 700;
+  letter-spacing: .16em; text-transform: uppercase; color: var(--muted);
+}
+.meta .eyebrow .dot {
+  width: clamp(7.8px, .62vw, 13px); aspect-ratio: 1; border-radius: 50%;
+  background: var(--muted-2); flex: 0 0 auto;
+}
+.meta.playing .eyebrow .dot { background: var(--accent); box-shadow: 0 0 0 4px color-mix(in oklab, var(--accent) 22%, transparent); }
+.meta h1 {
+  font-size: clamp(29px, 4.03vw, 87px);
+  font-weight: 900; line-height: 1.02; letter-spacing: -.01em;
+  overflow: hidden; text-overflow: ellipsis;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+}
+.meta .artist { font-size: clamp(17px, 1.79vw, 40px); color: var(--text); font-weight: 700; }
+.meta .album { font-size: clamp(13px, 1.18vw, 24px); color: var(--muted); font-weight: 600; }
+
+/* --------------------------------------------------------------- slider */
+.slider {
+  position: relative; width: 100%;
+  padding: clamp(11px, 1.01vw, 20px) 0;
+  cursor: pointer;
+  /* never inherit an aspect ratio from a sibling rule: that turned the volume
+     slider into a 320x320 square with a zero-width track */
+  aspect-ratio: auto; height: auto;
+}
+.slider .track {
+  position: relative; height: clamp(7.8px, .78vw, 16px);
+  border-radius: 999px; background: var(--panel-2); overflow: hidden;
+}
+.slider .track .fill {
+  position: absolute; inset: 0 auto 0 0; width: 0%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, color-mix(in oklab, var(--accent) 78%, transparent), var(--accent));
+}
+.slider .track .loaded {
+  position: absolute; inset: 0 auto 0 0; width: 0%;
+  background: color-mix(in oklab, var(--text) 12%, transparent);
+}
+.slider .knob {
+  position: absolute; top: 50%; left: 0;
+  width: clamp(18px, 1.68vw, 34px); aspect-ratio: 1; border-radius: 50%;
+  background: var(--knob);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, .4);
+  transform: translate(-50%, -50%) scale(.9);
+  opacity: 0; transition: opacity .25s ease, transform .2s var(--bounce);
+  pointer-events: none;
+}
+.slider:hover .knob, .slider.dragging .knob, .slider:focus-visible .knob {
+  opacity: 1; transform: translate(-50%, -50%) scale(1);
+}
+.slider:hover .track, .slider.dragging .track { height: clamp(11px, 1.06vw, 22px); }
+.slider .track { transition: height .2s var(--ease); }
+.slider.scrub { margin-top: clamp(4.5px, .56vw, 11px); }
+
+.times {
+  display: flex; justify-content: space-between;
+  font-size: clamp(12px, 1.06vw, 21px); color: var(--muted);
+  font-variant-numeric: tabular-nums; font-weight: 700;
+}
+
+/* ------------------------------------------------------------- controls */
+.controls {
+  display: flex; align-items: center; gap: clamp(9px, 1.12vw, 22px);
+  margin-top: clamp(4.5px, .9vw, 18px); flex-wrap: wrap;
+}
+.round {
+  display: grid; place-items: center;
+  width: clamp(52px, 4.48vw, 87px); aspect-ratio: 1; border-radius: 50%;
+  background: var(--panel-2); color: var(--text);
+  transition: transform .18s var(--bounce), background-color .25s ease;
+}
+.round svg { width: 46%; }
+.round:hover { background: color-mix(in oklab, var(--accent) 24%, var(--panel-2)); }
+.round:active { transform: scale(.92); }
+.round.play {
+  width: clamp(65px, 5.82vw, 116px);
+  background: var(--accent); color: var(--accent-ink);
+  box-shadow: 0 14px 40px rgba(0, 0, 0, .45);
+}
+.round.play:hover { background: var(--accent); filter: brightness(1.08); }
+.round.play .ic-pause { display: none; }
+body.playing .round.play .ic-play { display: none; }
+body.playing .round.play .ic-pause { display: block; }
+
+.chip {
+  display: inline-flex; align-items: center; gap: clamp(6.7px, .67vw, 13px);
+  padding: clamp(10px, .95vw, 20px) clamp(15px, 1.4vw, 29px);
+  border-radius: 999px;
+  border: 1px solid var(--line); background: var(--panel);
+  font-size: clamp(13px, 1.18vw, 24px); font-weight: 700; color: var(--muted);
+}
+.chip svg { width: clamp(17px, 1.46vw, 29px); }
+.chip:hover { color: var(--text); background: var(--panel-2); }
+.chip.on { color: var(--accent-ink); background: var(--accent); border-color: transparent; }
+
+/* --------------------------------------------------------------- volume */
+.volumerow {
+  display: flex; align-items: center; gap: clamp(9px, 1.12vw, 22px);
+  margin-top: clamp(4.5px, .67vw, 13px);
+}
+/* `button.vol` only — a bare `.vol` also matched the volume slider itself
+   (class="slider vol") and squashed it into an icon-sized square. */
+.volumerow button.vol { display: grid; place-items: center; width: clamp(43px, 3.36vw, 63px); aspect-ratio: 1; color: var(--text); }
+.volumerow button.vol svg { width: 76%; }
+.volumerow button.vol .ic-muted { display: none; }
+body.muted .volumerow button.vol .ic-vol { display: none; }
+body.muted .volumerow button.vol .ic-muted { display: block; }
+.slider.vol { flex: 0 1 clamp(179px, 22.4vw, 515px); max-width: 50%; }
+.volumerow .pct {
+  font-size: clamp(13px, 1.18vw, 24px); font-weight: 800; color: var(--muted);
+  font-variant-numeric: tabular-nums; min-width: 4ch;
+}
+
+/* ==========================================================================
+   SIDE — queue
+   ========================================================================== */
+.side {
+  display: flex; flex-direction: column; gap: clamp(6.7px, .9vw, 18px);
+  padding: clamp(13px, 1.46vw, 29px);
+  border: 1px solid var(--line); border-radius: var(--radius);
+  background: var(--panel);
+  min-height: 0;
+}
+.side-head { display: flex; align-items: center; justify-content: space-between; }
+.side-head h2 { font-size: clamp(17px, 1.51vw, 31px); font-weight: 800; letter-spacing: .01em; }
+.tiny {
+  padding: 7px 13px; border-radius: 999px; border: 1px solid var(--line);
+  font-size: clamp(12px, .95vw, 18px); color: var(--muted);
+}
+.tiny:hover { color: var(--text); background: var(--panel-2); }
+
+.queue { list-style: none; padding: 0; overflow-y: auto; min-height: 0; flex: 1; display: flex; flex-direction: column; gap: 7px; }
+.queue li {
+  display: grid; grid-template-columns: clamp(58px, 4.93vw, 92px) minmax(0, 1fr) auto;
+  align-items: center; gap: clamp(9px, .9vw, 18px);
+  padding: clamp(6.7px, .62vw, 13px);
+  border-radius: var(--radius-s);
+  cursor: pointer;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 67px;
+}
+.queue li:hover { background: var(--panel-2); }
+.queue .qart { width: 100%; aspect-ratio: 1; border-radius: 30%; }
+.queue .qmeta { min-width: 0; }
+.queue .qt { display: block; font-size: clamp(17px, 1.4vw, 28px); font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.queue .qa { display: block; font-size: clamp(13px, 1.12vw, 21px); color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.queue .qd { font-size: clamp(13px, 1.12vw, 21px); color: var(--muted-2); font-variant-numeric: tabular-nums; }
+.empty { font-size: clamp(13px, 1.12vw, 20px); color: var(--muted-2); }
+
+/* ==========================================================================
+   SHELVES — playlists
+   ========================================================================== */
+/* No scroller of its own: the music is part of the column's scroll (see `.left`),
+   so a wheel or a finger over a shelf scrolls the wall the way any page does,
+   and `body.fold-off` is what gives it back its own scroller. */
+.shelves { flex: 0 0 auto; overflow: visible; }
+.left::-webkit-scrollbar, .shelves::-webkit-scrollbar, .queue::-webkit-scrollbar { width: 10px; }
+.left::-webkit-scrollbar-thumb, .shelves::-webkit-scrollbar-thumb, .queue::-webkit-scrollbar-thumb { background: var(--panel-2); border-radius: 99px; }
+
+/* Six shelves of twenty tiles is 120 covers, and every one of them used to be
+   painted whether it was anywhere near the screen or not. Measured with the CPU
+   throttled to a small computer's, half of the time spent scrolling the music was
+   in frames longer than 33ms; skipping the shelves that are off the screen took
+   that to 29%. `auto` is what makes it safe: the browser remembers the height a
+   shelf had the last time it was painted, so the scrollbar never lies about where
+   the music ends. */
+.shelf {
+  margin-bottom: clamp(11px, 1.57vw, 31px);
+  content-visibility: auto;
+  contain-intrinsic-size: auto 336px;
+}
+.shelf-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: clamp(5.6px, .62vw, 12px); }
+.shelf-head h2 {
+  font-size: clamp(18px, 1.68vw, 36px); font-weight: 800; letter-spacing: -.005em;
+}
+.shelf-head span { font-size: clamp(12px, 1.01vw, 19px); color: var(--muted); }
+
+/* Cover first: a tile is mostly its sleeve and the two lines under it are a
+   caption. The design drew a padded card, and the padding was the only thing
+   between the cover and the edge of the tile — with it gone the picture takes
+   the room, and because each tile is narrower a row now holds more of them, so
+   the shelves read as sleeves rather than as a list of cards. */
+.row { display: flex; gap: clamp(9px, 1.01vw, 22px); overflow-x: auto; padding-bottom: 8px; scroll-snap-type: x proximity; }
+.row::-webkit-scrollbar { height: 10px; }
+.row::-webkit-scrollbar-thumb { background: var(--panel-2); border-radius: 99px; }
+.row > * { scroll-snap-align: start; }
+
+.tile {
+  flex: 0 0 auto;
+  /* Sized to be read across a room, not to fit as many in a row as possible: the
+     cards were asked for bigger so their names can be read from the sofa, and
+     the media player above them was asked not to grow with them (its own sizes
+     are untouched). */
+  width: clamp(148px, 13.89vw, 323px);
+  text-align: left;
+  border-radius: var(--radius);
+  padding: clamp(4.5px, .45vw, 10px);
+  transition: background-color .25s ease, transform .22s var(--bounce);
+}
+.tile:hover { background: var(--panel-2); transform: translateY(-4px); }
+.tile:active { transform: scale(.97); }
+.tile .cover {
+  width: 100%; aspect-ratio: 1; border-radius: calc(var(--radius) - 4px);
+  display: grid; place-items: center; overflow: hidden;
+  box-shadow: var(--shadow); position: relative;
+}
+.tile .cover img { width: 100%; height: 100%; object-fit: cover; }
+.tile .cover .mark { display: grid; place-items: center; font-size: clamp(36px, 4.03vw, 87px); font-weight: 900; color: var(--text); opacity: .62; }
+.tile .cover .mark svg { width: 46%; height: auto; }
+.tile .cover .playbadge {
+  position: absolute; right: 8%; bottom: 8%;
+  width: 26%; aspect-ratio: 1; border-radius: 50%;
+  background: var(--accent); color: var(--accent-ink);
+  display: grid; place-items: center;
+  opacity: 0; transform: translateY(8px); transition: opacity .25s ease, transform .3s var(--bounce);
+}
+.tile:hover .cover .playbadge { opacity: 1; transform: translateY(0); }
+.tile .cover .playbadge svg { width: 46%; }
+.tile .name { display: block; margin-top: clamp(5.6px, .56vw, 11px); font-size: clamp(16px, 1.46vw, 29px); font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tile .sub { display: block; font-size: clamp(13px, 1.18vw, 22px); color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tile.playing-ring .cover { outline: 3px solid var(--accent); outline-offset: 3px; }
+
+/* ==========================================================================
+   SEARCH RESULTS SHEET
+   ========================================================================== */
+/* The sheet is drawn at the size of the wall it is on, because what it shows is a
+   list to choose from and the person choosing is across the room. It used to be a
+   1100px box on a 1920px screen, with every song squeezed into a strip of text in
+   the middle — the state a 200-song playlist was reported in.
+
+   Its place in the stack is the one that was wrong: the words of the current song
+   are a full-screen overlay at z-index 60, and the panel opens them by itself for
+   every track, so a list at z-index 40 was painted behind them and took no taps —
+   a search or a song list on a wall with music playing was invisible and dead, and
+   the first tap on it closed the words instead. The list sits above the words,
+   under Nix's question (70) and the toast (80): what a person opened is above what
+   the panel is showing, and what is being asked is above everything. */
+.sheet {
+  position: fixed; z-index: 65;
+  top: clamp(65px, 6.72vw, 121px); left: 50%; transform: translateX(-50%);
+  width: min(1926px, 96vw); max-height: min(78vh, 1030px);
+  display: flex; flex-direction: column;
+  padding: clamp(11px, 1.12vw, 22px) clamp(11px, 1.12vw, 22px) clamp(4.5px, .45vw, 11px);
+  border: 1px solid var(--line); border-radius: var(--radius);
+  background: color-mix(in oklab, var(--bg-2) 96%, transparent);
+  box-shadow: var(--shadow);
+  animation: sheetIn .28s var(--ease);
+}
+@keyframes sheetIn { from { opacity: 0; transform: translate(-50%, -12px); } to { opacity: 1; transform: translate(-50%, 0); } }
+.sheet header { display: flex; align-items: center; justify-content: space-between; padding: 0 7px 9px; }
+.sheet header span { font-size: clamp(13px, 1.12vw, 21px); font-weight: 800; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }
+.sheet .results { overflow-x: hidden; overflow-y: auto; display: block; }
+.sheet .hint { padding: 8px 6px 0; font-size: clamp(12px, 1.06vw, 19px); color: var(--muted); }
+
+/* ======================================================== THE RAILS
+   One rail per named group. A long list laid out down the sheet is a scroll box
+   with a strip of text per song and rows that shrink to fit it; laid out across
+   it is what the shelves already do — a card per song, its sleeve over its name —
+   and sliding becomes the browser's own smooth scroll: a page at a time from the
+   arrows in the heading, or however far a thumb pushes it on a touch screen. */
+.resgroup { display: block; }
+.resgroup + .resgroup { margin-top: clamp(6.7px, .78vw, 18px); }
+.railhead {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0 clamp(4.5px, .45vw, 11px) clamp(4.5px, .45vw, 9px);
+}
+.railhead h3 {
+  font-size: clamp(11px, .95vw, 18px); font-weight: 800;
+  letter-spacing: .14em; text-transform: uppercase; color: var(--muted-2);
+}
+.railnav { display: flex; gap: clamp(6.7px, .56vw, 11px); }
+.railbtn {
+  width: clamp(34px, 2.69vw, 52px); aspect-ratio: 1;
+  display: grid; place-items: center;
+  border: 1px solid var(--line); border-radius: 999px;
+  background: var(--panel); color: var(--muted);
+}
+.railbtn svg { width: 46%; }
+.railbtn:hover, .railbtn:focus-visible { color: var(--accent-ink); background: var(--accent); border-color: transparent; outline: none; }
+.railbtn:active { transform: scale(.92); }
+
+.rail {
+  display: flex; gap: clamp(9px, 1.01vw, 22px);
+  overflow-x: auto; overflow-y: hidden;
+  scroll-behavior: smooth; scroll-snap-type: x mandatory;
+  padding: 2px clamp(4.5px, .45vw, 11px) clamp(9px, .9vw, 20px);
+  scroll-padding-left: clamp(4.5px, .45vw, 11px);
+}
+.rail::-webkit-scrollbar { height: 10px; }
+.rail::-webkit-scrollbar-thumb { background: var(--panel-2); border-radius: 99px; }
+.rail > .resline {
+  flex: 0 0 auto; position: relative;
+  scroll-snap-align: start;
+  /* The same card as a shelf tile, at the same larger size. */
+  width: clamp(208px, 20.72vw, 430px);
+}
+
+/* One card: the sleeve, then what it is. Cover first, exactly as a shelf tile. */
+.resline { display: block; }
+.res {
+  display: flex; flex-direction: column; align-items: stretch;
+  gap: clamp(4.5px, .45vw, 11px);
+  padding: clamp(4.5px, .45vw, 10px);
+  border-radius: var(--radius);
+  text-align: left; width: 100%;
+  transition: background-color .25s ease, transform .22s var(--bounce);
+}
+.res:hover, .res:focus-visible { background: var(--panel-2); transform: translateY(-3px); outline: none; }
+.res:active { transform: scale(.98); }
+.res .rart {
+  width: 100%; aspect-ratio: 1; border-radius: calc(var(--radius) - 4px);
+  display: grid; place-items: center; overflow: hidden;
+  box-shadow: var(--shadow);
+}
+.res .rt { display: block; font-size: clamp(17px, 1.51vw, 31px); font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.res .ra { display: block; font-size: clamp(13px, 1.23vw, 24px); color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.res .rtag {
+  align-self: flex-start;
+  font-size: clamp(11px, .87vw, 17px); font-weight: 800; letter-spacing: .1em; text-transform: uppercase;
+  color: var(--accent-ink); background: var(--accent);
+  padding: 6px 13px; border-radius: 999px;
+}
+.res .rtag.soft { color: var(--muted); background: var(--panel-2); }
+
+/* The queue control rides the sleeve's corner, where a thumb expects it. */
+.resline .res-queue {
+  position: absolute; right: clamp(9px, .9vw, 18px); top: clamp(9px, .9vw, 18px);
+  width: clamp(45px, 3.7vw, 69px); aspect-ratio: 1;
+  display: grid; place-items: center;
+  border: 1px solid color-mix(in oklab, var(--line) 70%, transparent);
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--bg-2) 78%, transparent);
+  color: var(--text);
+  opacity: 0; transform: translateY(-4px);
+  transition: opacity .2s ease, transform .24s var(--bounce), background-color .2s ease, color .2s ease;
+}
+.res-queue svg { width: 52%; }
+.resline:hover .res-queue, .resline:focus-within .res-queue { opacity: 1; transform: none; }
+.res-queue:hover, .res-queue:focus-visible { color: var(--accent-ink); background: var(--accent); border-color: transparent; outline: none; }
+.res-queue:active { transform: scale(.92); }
+/* A touch screen has no hover, so there the control is simply always there. */
+@media (hover: none) { .resline .res-queue { opacity: 1; transform: none; } }
+
+/* The cards arrive in a run, which is what makes a rail read as something to
+   slide through rather than a wall of pictures that appeared all at once. */
+@keyframes railIn { from { opacity: 0; transform: translateY(14px) scale(.97); } to { opacity: 1; transform: none; } }
+.rail > .resline { animation: railIn .34s var(--ease) both; }
+.rail > .resline:nth-child(2) { animation-delay: .03s; }
+.rail > .resline:nth-child(3) { animation-delay: .06s; }
+.rail > .resline:nth-child(4) { animation-delay: .09s; }
+.rail > .resline:nth-child(5) { animation-delay: .12s; }
+.rail > .resline:nth-child(6) { animation-delay: .15s; }
+.rail > .resline:nth-child(7) { animation-delay: .18s; }
+.rail > .resline:nth-child(8) { animation-delay: .21s; }
+.rail > .resline:nth-child(n+9) { animation-delay: .24s; }
+
+/* ==========================================================================
+   ASK OVERLAY — "which one did you mean?"
+   ========================================================================== */
+.overlay {
+  position: fixed; inset: 0; z-index: 60;
+  background: var(--scrim);
+  animation: fade .3s ease;
+}
+@keyframes fade { from { opacity: 0; } to { opacity: 1; } }
+
+/* Above the lyrics overlay (also z-index 60, but later in the DOM): a question
+   from Nix PUCA must never be hidden behind the words of the current song. */
+.ask { z-index: 70; display: grid; place-items: center; padding: var(--pad); }
+.ask-card {
+  width: min(1322px, 95vw); max-height: 92vh;
+  display: flex; flex-direction: column; gap: clamp(9px, 1.12vw, 22px);
+  padding: clamp(20px, 2.46vw, 49px);
+  border: 1px solid var(--line); border-radius: var(--radius);
+  background: color-mix(in oklab, var(--bg-2) 88%, transparent);
+  box-shadow: var(--shadow);
+  animation: rise .38s var(--bounce);
+}
+@keyframes rise { from { opacity: 0; transform: translateY(24px) scale(.98); } to { opacity: 1; transform: none; } }
+.ask-eyebrow {
+  font-size: clamp(12px, 1.06vw, 20px); font-weight: 800; letter-spacing: .18em;
+  text-transform: uppercase; color: var(--accent);
+}
+.ask-card h2 { font-size: clamp(25px, 2.91vw, 60px); font-weight: 900; line-height: 1.05; }
+.ask-heard { font-size: clamp(13px, 1.18vw, 24px); color: var(--muted); }
+/* One wide row per option, never a narrow column: the whole point of this
+   screen is being able to tell the choices apart from across a room. */
+.ask-options {
+  display: grid; gap: clamp(9px, 1.01vw, 18px);
+  grid-template-columns: minmax(0, 1fr);
+  overflow-y: auto; padding: 4px; min-height: 0;
+}
+.opt {
+  display: grid; grid-template-columns: clamp(54px, 4.48vw, 94px) minmax(0, 1fr) auto;
+  align-items: center; gap: clamp(11px, 1.12vw, 25px);
+  padding: clamp(9px, 1.01vw, 20px);
+  border: 1px solid var(--line); border-radius: var(--radius);
+  background: var(--panel); text-align: left;
+  transition: transform .18s var(--bounce), background-color .25s ease, border-color .25s ease;
+}
+.opt:hover, .opt:focus-visible { background: var(--panel-2); border-color: color-mix(in oklab, var(--accent) 55%, transparent); transform: translateY(-3px); outline: none; }
+.opt:active { transform: scale(.98); }
+.opt .oart { width: 100%; aspect-ratio: 1; border-radius: 26%; }
+.opt .ot { display: block; font-size: clamp(18px, 1.68vw, 35px); font-weight: 800; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.opt .oa { display: block; font-size: clamp(13px, 1.18vw, 24px); color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.opt .num {
+  display: grid; place-items: center;
+  width: clamp(34px, 2.91vw, 58px); aspect-ratio: 1; border-radius: 30%;
+  background: var(--panel-2); font-weight: 900; font-size: clamp(16px, 1.34vw, 27px);
+}
+.opt:hover .num { background: var(--accent); color: var(--accent-ink); }
+
+.ask-foot { display: flex; align-items: center; justify-content: space-between; gap: var(--gap); flex-wrap: wrap; }
+.mic-hint {
+  display: inline-flex; align-items: center; gap: 11px;
+  font-size: clamp(13px, 1.12vw, 21px); color: var(--muted);
+}
+.mic-hint svg { width: clamp(18px, 1.46vw, 29px); }
+.mic-hint:hover { color: var(--text); }
+.mic-hint.live { color: var(--accent); font-weight: 800; }
+.mic-hint.live svg { animation: hud 1.4s ease-in-out infinite; }
+@keyframes hud { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+.ghost {
+  padding: clamp(10px, .95vw, 20px) clamp(18px, 1.68vw, 34px);
+  border-radius: 999px; border: 1px solid var(--line);
+  font-size: clamp(13px, 1.18vw, 22px); font-weight: 700; color: var(--muted);
+}
+.ghost:hover { color: var(--text); background: var(--panel-2); }
+
+/* ==========================================================================
+   LYRICS — the design that takes over the wall
+   ========================================================================== */
+.lyrics {
+  background: var(--bg);
+  display: flex; flex-direction: column;
+}
+/* Was a 157px CSS blur over a 1.4-viewport box — by far the most expensive
+   thing on this screen. A radial gradient says the same thing for free. */
+.lyr-bg {
+  position: absolute; inset: 0;
+  z-index: 0; opacity: .85;
+  transition: background 1.4s ease;
+  pointer-events: none;
+}
+.lyr-head {
+  position: relative; z-index: 2;
+  display: flex; align-items: center; justify-content: space-between;
+  gap: var(--gap); padding: var(--pad);
+}
+.lyr-now { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.lyr-now .np-title {
+  font-size: clamp(18px, 1.68vw, 36px); font-weight: 900;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.lyr-now .np-artist { font-size: clamp(13px, 1.18vw, 24px); color: var(--muted); }
+.lyr-close {
+  display: inline-flex; align-items: center; gap: 10px;
+  padding: clamp(10px, .9vw, 19px) clamp(16px, 1.46vw, 29px);
+  border: 1px solid var(--line); border-radius: 999px;
+  font-size: clamp(13px, 1.12vw, 21px); font-weight: 700; color: var(--muted);
+  background: var(--panel);
+}
+.lyr-close svg { width: clamp(17px, 1.34vw, 27px); }
+.lyr-close:hover { color: var(--text); background: var(--panel-2); }
+
+/* Not a scroll container any more. The verses are moved with a compositor
+   transform, which removed both the per-frame scrollTop layout write and the
+   scroll mask that had to be re-rasterised on every frame. */
+.lyr-scroller {
+  position: relative; z-index: 2;
+  flex: 1 1 auto; min-height: 0;
+  overflow: hidden;
+}
+/* Edge fades as plain fixed overlays: same effect as the old mask, no mask. */
+.lyr-scroller::before,
+.lyr-scroller::after {
+  content: "";
+  position: absolute; left: 0; right: 0; height: 15%;
+  z-index: 3; pointer-events: none;
+}
+.lyr-scroller::before { top: 0; background: linear-gradient(to bottom, var(--bg), transparent); }
+.lyr-scroller::after { bottom: 0; background: linear-gradient(to top, var(--bg), transparent); }
+
+.lyr-lines {
+  position: relative;
+  display: flex; flex-direction: column; gap: clamp(11px, 1.57vh, 29px);
+  padding: 0 clamp(22px, 6.72vw, 157px);
+  align-items: center; text-align: center;
+  will-change: transform;
+}
+.lyr-line {
+  font-size: clamp(25px, 3.92vw, 85px);
+  font-weight: 800; line-height: 1.14; letter-spacing: -.015em;
+  color: var(--muted-2);
+  transform: scale(.94);
+  transition: color .34s ease, transform .34s var(--ease), opacity .34s ease;
+}
+.lyr-line.past { color: var(--muted-2); opacity: .5; }
+.lyr-line.cur {
+  color: var(--text);
+  transform: scale(1);
+  /* one cheap shadow instead of the old 40px-blur ink shadow */
+  text-shadow: 0 3px 12px rgba(0, 0, 0, .38);
+}
+.lyr-line.next { color: var(--muted); opacity: .82; }
+.lyr-line.plain {
+  font-size: clamp(22px, 2.91vw, 60px);
+  color: var(--muted); transform: none;
+}
+.lyr-line .pill {
+  display: inline-block; padding: 4px 18px; border-radius: 999px;
+  background: var(--panel-2); font-size: .5em; font-weight: 700; color: var(--muted);
+  letter-spacing: .1em; text-transform: uppercase;
+}
+.lyr-foot {
+  position: relative; z-index: 2;
+  display: grid; grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center; gap: var(--gap);
+  /* A wall's bottom edge is where a TV overscans and where a device puts a bar
+     of its own, and the size chips live down here. Measured live: a few percent
+     of the bottom of the glass is simply not shown by many televisions, which
+     is exactly where a control on the very edge disappears. The footer is
+     therefore lifted well clear of it instead of resting on it. */
+  padding: 0 var(--pad) calc(var(--pad) + 3.4vh);
+}
+.slider.scrub.thin .track { height: clamp(5.6px, .56vw, 11px); }
+.lyr-times {
+  display: flex; gap: clamp(11px, 1.34vw, 29px);
+  font-size: clamp(12px, 1.06vw, 20px); color: var(--muted);
+  font-variant-numeric: tabular-nums; font-weight: 700;
+}
+
+/* ==========================================================================
+   TOAST
+   ========================================================================== */
+.toast {
+  position: fixed; z-index: 80;
+  left: 50%; bottom: clamp(20px, 3.36vh, 54px); transform: translateX(-50%);
+  padding: clamp(11px, 1.01vw, 20px) clamp(18px, 1.79vw, 36px);
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--bg-2) 96%, transparent);
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow);
+  font-size: clamp(13px, 1.18vw, 24px); font-weight: 700;
+  animation: toastIn .3s var(--bounce);
+}
+@keyframes toastIn { from { opacity: 0; transform: translate(-50%, 14px); } to { opacity: 1; transform: translate(-50%, 0); } }
+
+/* ==========================================================================
+   NARROW SCREENS — a phone can drive the panel too
+   ========================================================================== */
+@media (max-width: 900px) {
+  body { overflow: auto; }
+  .drift { animation: none; height: auto; min-height: 100%; }
+  .grid { grid-template-columns: minmax(0, 1fr); }
+  /* the page is the scroller here, not the column, so a thumb never fights two
+     nested scroll containers */
+  .left { min-height: auto; overflow: visible; }
+  .hero { grid-template-columns: auto minmax(0, 1fr); }
+  .side { max-height: 40vh; }
+  .shelves { flex: 0 0 auto; overflow: visible; }
+  .row { flex-wrap: wrap; overflow: visible; }
+  .top { grid-template-columns: auto 1fr; }
+  .clockbox { grid-column: 1 / -1; justify-content: flex-end; }
+  .top .clockbox { grid-column: auto; }
+  .searchbar input::placeholder { font-size: .8em; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition-duration: .01ms !important; }
+}
+
+/* =============================================================== LYRICS ZOOM
+   The one control added to the design: a pair of buttons in the bottom-left of
+   the lyrics page that zoom the words. The design's own line size is kept and
+   multiplied by a single factor, so the zoom is one number and every size the
+   design sets stays in step with it.
+
+   It is always drawn, and nothing about it is conditional: it is in the footer
+   for every track, with words or without, open by the panel or by hand.
+
+   It is also drawn to be seen. It used to be 30-46px circles in the page's own
+   low-contrast panel colour, faded to 35% at the ends of their range, sitting
+   on the very bottom edge of the glass — a translucent circle on a translucent
+   panel at the end of a screen a television crops. Measured live, the control
+   was in every frame and still reported as missing three times, so it is now
+   the shape a wall control has to be: a solid chip in the theme's foreground,
+   the size of a fingertip, with the word the two of them spell out. */
+.lyr-foot { grid-template-columns: auto minmax(0, 1fr) auto; }
+.lyr-zoom { display: flex; align-items: center; gap: clamp(9px, .9vw, 18px); }
+.lyr-zoom-label {
+  font-size: clamp(11px, .9vw, 18px);
+  font-weight: 800;
+  letter-spacing: .16em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.lyr-zoom button {
+  width: clamp(65px, 5.15vw, 112px);
+  height: clamp(65px, 5.15vw, 112px);
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  /* Solid, not translucent: at 5% white on a near-black page the circle itself
+     had nothing to see — only its two letters did. */
+  background: var(--accent);
+  color: var(--accent-ink);
+  font: inherit;
+  font-size: clamp(21px, 1.79vw, 38px);
+  font-weight: 800;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: 0 8px 22px rgba(0, 0, 0, .38);
+  transition: transform .2s var(--ease), background .2s ease, color .2s ease;
+}
+.lyr-zoom button:hover, .lyr-zoom button:focus-visible {
+  background: color-mix(in oklab, var(--accent) 82%, var(--bg));
+  outline: clamp(2.2px, .25vw, 4.5px) solid color-mix(in oklab, var(--accent) 60%, transparent);
+  outline-offset: clamp(2.2px, .22vw, 4.5px);
+}
+.lyr-zoom button:active { transform: scale(.94); }
+/* At the end of its range a chip steps back, never fades out: it is still a
+   control that is there, and the other one still grows the words. */
+.lyr-zoom button[disabled] {
+  opacity: 1;
+  background: var(--panel-2);
+  color: var(--muted);
+  box-shadow: none;
+  cursor: default;
+}
+.lyr-zoom button[disabled]:hover, .lyr-zoom button[disabled]:focus-visible {
+  background: var(--panel-2);
+  outline: none;
+}
+.lyr-line { font-size: calc(clamp(25px, 3.92vw, 85px) * var(--lyr-zoom, 1)); }
+.lyr-line.plain { font-size: calc(clamp(22px, 2.91vw, 60px) * var(--lyr-zoom, 1)); }
+
+/* ==================================================== COVERS IN THE LISTS
+   The design drew the queue rows, the result rows and the ask options as flat
+   colour blocks. The console knows the artwork for all three — a queued song
+   has its cover, a search hit has one, and the options a spoken request is
+   choosing between are songs — so those blocks wear the picture the same way a
+   library tile does, and fall back to the block when there is none. */
+.queue .qart, .res .rart, .opt .oart { overflow: hidden; display: grid; place-items: center; }
+.queue .qart img, .res .rart img, .opt .oart img {
+  width: 100%; height: 100%; object-fit: cover; display: block;
+}
+
+/* See all: the tile that ends a shelf and holds the songs the row is not
+   showing. Same size and same tap as a tile, but drawn as an index rather than
+   a cover so it never reads as one more song. */
+.tile.see-all .cover {
+  background-image: none !important;
+  border: 2px dashed var(--line);
+}
+.tile.see-all .cover .mark { opacity: .5; }
+.tile.see-all .cover .mark svg { width: 34%; height: auto; }
+
+/* The library page: playlists as sleeves, in as many columns as the wall fits. */
+.tilegrid {
+  display: grid; gap: clamp(6.7px, .9vw, 20px);
+  grid-template-columns: repeat(auto-fill, minmax(clamp(116px, 10.75vw, 237px), 1fr));
+  padding: 4px;
+}
+.tilegrid .tile { width: 100%; }
+
+/* ============================================================== IDLE SAVER
+   Nothing playing, nothing being read, nobody touching the screen: the wall
+   hands itself over to the idle page. It is a document of its own in an
+   iframe, because its stylesheet styles `body` and `*` — rules like those
+   must not reach this page. Above every overlay, the toast included. */
+#saver {
+  position: fixed; inset: 0; z-index: 90;
+  width: 100%; height: 100%;
+  border: 0;
+  background: var(--bg);
+}
+body.saving { cursor: none; }

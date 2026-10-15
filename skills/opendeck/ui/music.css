@@ -1,0 +1,967 @@
+/* OpenDeck music page styles.
+ *
+ * Scoped to .music-app (the shell's mount point) and built entirely from the
+ * console's own design tokens, so the page is a NIX page first and an OpenDeck
+ * page second: the same paper surfaces, sage accent, 20px cards, pill controls
+ * and Georgia headings as the rest of the dashboard — including dark mode,
+ * which the tokens carry by themselves.
+ *
+ * Layout rules:
+ *   ≥1080px  two columns - now playing beside browse/lyrics
+ *   <1080px  one column, now playing first
+ *   ≤760px   edge-to-edge cards, a sticky mini bar, scrolling chips
+ *   ≤520px   44px tap targets, single-line rows, no clipped artwork
+ *
+ * Every state a tap produces is styled for immediate feedback (pending,
+ * playing, busy, disabled), so the page reads as instant even while the
+ * speaker is still being handed the stream.
+ */
+
+.music-app {
+  /* The wall panel's palette, in the console's own tokens.
+
+     The PUCA Panel on the wall is black and white: one ink colour, translucent
+     panels, hairline rules, no second hue. This page is the same music at desk
+     size, so it wears the same design — `--ink` is the panel's ink and the
+     "accent" is that ink, which is why every accent below is a shade of the
+     foreground rather than the dashboard's sage. The fallbacks keep it looking
+     like the panel in a host that defines none of these tokens. */
+  --m-ink: var(--ink, #0b0b12);
+  --m-muted: var(--muted, rgba(11, 11, 18, .62));
+  --m-line: var(--line, rgba(11, 11, 18, .14));
+  --m-paper: var(--bg, #ffffff);
+  --m-surface: var(--surface, #ffffff);
+  --m-alt: var(--surface-alt, rgba(11, 11, 18, .05));
+  --m-accent: var(--ink, #0b0b12);
+  --m-accent-ink: var(--ink, #0b0b12);
+  --m-accent-soft: color-mix(in oklab, var(--m-ink) 9%, transparent);
+  --m-accent-deep: var(--m-ink, #0b0b12);
+  /* The panel's own shapes: a bigger radius on a card, a pill on a control. */
+  --m-radius: clamp(16px, 1.6vw, 24px);
+  --m-radius-s: 12px;
+  --m-row: 56px;
+  --m-shadow: var(--shadow, 0 20px 50px rgba(0, 0, 0, .10));
+  /* The panel's type is Outfit, which ships inside the wall's package and is
+     not on this page's origin; the rounded system stack is what is left when a
+     face cannot be fetched, and it is the same shape of letter. */
+  --m-font: ui-rounded, "SF Pro Rounded", "Segoe UI Variable Display", system-ui,
+            -apple-system, sans-serif;
+  display: grid;
+  gap: 16px;
+  color: var(--m-ink);
+}
+
+.music-app *,
+.music-app *::before,
+.music-app *::after { box-sizing: border-box; }
+
+.music-app button,
+.music-app input { font: inherit; color: inherit; }
+
+/* The panel's shape, at desk size: the player and the shelves take the wide
+   column and "Up next" is the narrow one beside it, the way the wall reads.
+
+   The cards are placed by name rather than by DOM order, so the queue can sit
+   under the player on a narrow screen without the markup having to move — the
+   cards are in the grid's order (player, queue, shelves, words) and the areas
+   are what decides where each one lands. */
+.music-app .music-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.85fr) minmax(0, 1fr);
+  grid-template-areas:
+    "player queue"
+    "browse queue"
+    "lyrics queue";
+  gap: clamp(14px, 1.5vw, 22px);
+  align-items: start;
+}
+
+.music-app .music-now-card { grid-area: player; }
+.music-app .music-queue-card { grid-area: queue; }
+.music-app .music-browse-card { grid-area: browse; }
+.music-app .music-lyrics-card { grid-area: lyrics; }
+.music-app .music-card + .music-card { margin-top: 0; }
+
+/* A card is the panel's: a soft translucent block with a hairline edge, no
+   shadow to speak of, and the same radius as a wall card. */
+.music-app .music-card {
+  position: relative;
+  overflow: hidden;
+  padding: clamp(16px, 2.1vw, 26px);
+  border: 1px solid var(--m-line);
+  border-radius: var(--m-radius);
+  background: var(--m-surface);
+  box-shadow: none;
+}
+
+.music-app .music-card + .music-card { margin-top: clamp(14px, 1.5vw, 22px); }
+
+.music-app .music-card > h3 {
+  margin: 0 0 14px;
+  font-family: var(--m-font);
+  font-size: clamp(17px, 1.5vw, 21px);
+  font-weight: 700;
+  line-height: 1.15;
+  letter-spacing: -.02em;
+}
+
+/* The panel's headings are its own rounded face, and so is its eyebrow: small,
+   wide-tracked, in the ink rather than a second colour. */
+.music-app h2,
+.music-app h3,
+.music-app strong,
+.music-app button,
+.music-app input { font-family: var(--m-font); }
+
+.music-app .music-badge,
+.music-app .music-now-artist,
+.music-app .music-queue-count { font-family: var(--m-font); }
+
+/* The small uppercase label the rest of the dashboard uses above a heading. */
+.music-app .music-eyebrow {
+  display: block;
+  margin-bottom: 7px;
+  color: var(--m-accent-ink);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+}
+
+/* ── now playing ─────────────────────────────────────────────────────────── */
+
+.music-app .music-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr);
+  gap: clamp(16px, 2.2vw, 26px);
+  align-items: center;
+}
+
+.music-app .music-hero-art {
+  position: relative;
+  min-width: 0;
+  aspect-ratio: 1 / 1;
+  max-width: 280px;
+}
+
+/* The aura is the artwork's own light: it carries the accent, sits behind the
+   sleeve and breathes only while the speaker is actually playing. */
+.music-app .music-hero-art::before {
+  content: "";
+  position: absolute;
+  inset: -14% -14% -22%;
+  border-radius: 50%;
+  background: radial-gradient(circle at 50% 45%, var(--m-accent) 0%, transparent 62%);
+  opacity: .16;
+  filter: blur(18px);
+  transition: opacity .35s ease, transform .6s ease;
+  pointer-events: none;
+}
+.music-app .music-now-card.is-live .music-hero-art::before { opacity: .30; }
+
+.music-app .music-artwork {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  aspect-ratio: 1 / 1;
+  border: 1px solid var(--m-line);
+  border-radius: 18px;
+  background: var(--m-alt);
+  object-fit: cover;
+  box-shadow: 0 24px 44px -30px #202a2266;
+}
+.music-app .music-artwork[hidden] { display: none; }
+
+/* No artwork: a sleeve with a record peeking out of it, drawn in CSS. */
+.music-app .music-vinyl {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  border: 1px solid var(--m-line);
+  border-radius: 18px;
+  background: linear-gradient(145deg, var(--m-alt), var(--m-surface));
+  overflow: hidden;
+}
+.music-app .music-vinyl[hidden] { display: none; }
+.music-app .music-vinyl::before {
+  content: "";
+  width: 74%;
+  height: 74%;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 50% 50%, var(--m-accent) 0 15%, var(--m-surface) 15% 18%, transparent 18%),
+    repeating-radial-gradient(circle at 50% 50%, #202a220f 0 1px, #0000 1px 4px),
+    linear-gradient(145deg, #2c332e, #1d221f);
+  box-shadow: 0 12px 26px -16px #202a226b;
+  animation: music-spin 9s linear infinite;
+  animation-play-state: paused;
+}
+.music-app .music-now-card.is-live .music-vinyl::before { animation-play-state: running; }
+.music-app .music-vinyl span {
+  position: absolute;
+  color: var(--m-muted);
+  font-size: 26px;
+}
+@keyframes music-spin { to { transform: rotate(360deg); } }
+
+.music-app .music-hero-copy { min-width: 0; }
+
+.music-app .music-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 12px;
+  padding: 5px 11px;
+  border: 1px solid var(--m-line);
+  border-radius: 999px;
+  background: var(--m-alt);
+  color: var(--m-muted);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: .09em;
+  text-transform: uppercase;
+}
+/* The live dot is the same one the dashboard uses for a running thing. */
+.music-app .music-badge::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--m-muted);
+  opacity: .5;
+  transition: background-color .25s ease, opacity .25s ease, box-shadow .25s ease;
+}
+.music-app .music-badge.is-live {
+  border-color: transparent;
+  color: var(--m-accent-ink);
+  background: var(--m-accent-soft);
+}
+.music-app .music-badge.is-live::before {
+  background: var(--m-accent);
+  opacity: 1;
+  box-shadow: 0 0 0 3px var(--m-accent-soft), 0 0 8px var(--m-accent);
+  animation: music-pulse 1.2s ease-in-out infinite alternate;
+}
+@keyframes music-pulse { from { opacity: .45; } to { opacity: 1; } }
+
+.music-app .music-now-title {
+  margin: 0 0 5px;
+  font: 600 clamp(21px, 2.3vw, 28px)/1.15 Georgia, "Times New Roman", serif;
+  letter-spacing: -.04em;
+  overflow-wrap: anywhere;
+}
+
+.music-app .music-now-artist {
+  margin: 0;
+  color: var(--m-muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.music-app .music-progress {
+  position: relative;
+  height: 6px;
+  margin: 18px 0 7px;
+  border-radius: 999px;
+  background: var(--m-alt);
+  overflow: hidden;
+}
+.music-app .music-progress > span {
+  display: block;
+  width: 0;
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--m-accent), var(--m-accent-deep));
+  transition: width .2s linear;
+}
+
+.music-app .music-times {
+  display: flex;
+  justify-content: space-between;
+  color: var(--m-muted);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── the control hub ──────────────────────────────────────────────────────
+   One cluster, exactly like the Echo Connect speaker panel's: the round volume
+   wheel with the level in its centre, and the transport as two round controls
+   either side of it. Nothing repeats a control the wheel already carries — no
+   second play/pause, no Stop — because the page has one transport. */
+.music-app .music-hub {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  margin-top: 18px;
+}
+
+.music-app .music-round {
+  position: relative;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  flex: none;
+  width: 66px;
+  height: 66px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  font-size: 11.5px;
+  font-weight: 750;
+  letter-spacing: .01em;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color .15s ease, box-shadow .18s ease, color .15s ease, transform .12s ease;
+}
+.music-app .music-round:active { transform: scale(.95); }
+.music-app .music-round:disabled { opacity: .45; cursor: default; }
+
+/* Play/pause is the one action that matters, so it wears the accent. */
+.music-app .music-play {
+  width: 74px;
+  height: 74px;
+  background: linear-gradient(135deg, var(--m-accent), var(--m-accent-deep));
+  color: #fff;
+  box-shadow: 0 12px 28px -14px var(--m-accent-deep), inset 0 1px 0 #ffffff2e;
+}
+.music-app .music-play:hover { filter: brightness(1.07); }
+.music-app .music-play[aria-pressed="true"],
+.music-app .music-play.is-live { box-shadow: 0 14px 32px -14px var(--m-accent-deep), 0 0 0 6px var(--m-accent-soft); }
+
+/* Mute: a soft disc that fills in when the speaker is actually muted, with the
+   speaker icon growing its waves or taking a slash, so the state reads without
+   colour. The muted tint matches the speaker panel's amber in the dashboard. */
+.music-app .music-mute {
+  background: radial-gradient(circle at 50% 30%, var(--m-surface) 0%, var(--m-alt) 100%);
+  color: var(--m-accent-ink);
+  box-shadow: 0 10px 24px -16px #202a2240, inset 0 1px 0 #ffffff;
+}
+.music-app .music-mute:hover { box-shadow: 0 12px 28px -16px var(--m-accent-soft), 0 0 0 3px var(--m-accent-soft); }
+.music-app .music-mute svg { width: 20px; height: 20px; display: block; }
+.music-app .music-mute .music-mute-slash { opacity: 0; transition: opacity .15s ease; }
+.music-app .music-mute .music-mute-waves { opacity: 1; transition: opacity .15s ease; }
+.music-app .music-mute[aria-pressed="true"] {
+  color: #8a6d1b;
+  background: radial-gradient(circle at 50% 30%, #fdf8ec 0%, #f6ecd4 100%);
+  box-shadow: 0 10px 24px -16px #8a6d1b33, inset 0 1px 0 #ffffff;
+}
+.music-app .music-mute[aria-pressed="true"]:hover { box-shadow: 0 12px 28px -16px #8a6d1b33, 0 0 0 3px #8a6d1b1f; }
+.music-app .music-mute[aria-pressed="true"] .music-mute-slash { opacity: 1; }
+.music-app .music-mute[aria-pressed="true"] .music-mute-waves { opacity: 0; }
+.music-app .music-round-label { font-size: 10px; font-weight: 750; letter-spacing: .02em; }
+
+.music-app .music-controls button:focus-visible,
+.music-app .music-row:focus-visible,
+.music-app .music-tabs button:focus-visible,
+.music-app .music-search input:focus-visible,
+.music-app .music-search button:focus-visible,
+.music-app .music-volume input:focus-visible,
+.music-app .music-volume button:focus-visible,
+.music-app .music-mini button:focus-visible {
+  outline: 0;
+  box-shadow: 0 0 0 3px var(--m-accent-soft);
+}
+
+/* ── volume: the speaker panel's graphical dial ───────────────────────────
+   One soft wheel with the live level in its centre, a halo, and a ▲/▼ stepper —
+   the same composition the Echo Connect speaker panel renders, in music tokens.
+   Drag, scroll or arrow keys set the level; a drag previews and commits when it
+   settles, a step commits at once. */
+.music-app .music-volume {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  margin-top: 16px;
+  padding: 18px 0 4px;
+  border-top: 1px solid var(--m-line);
+}
+.music-app .music-volhead { display: flex; align-items: center; gap: 8px; }
+.music-app .music-spkicon { display: grid; place-items: center; width: 24px; height: 24px; flex: none; color: var(--m-muted); }
+.music-app .music-vollbl { font-size: 11px; font-weight: 750; letter-spacing: 2px; text-transform: uppercase; color: var(--m-muted); }
+.music-app .music-volwheel {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 168px;
+  height: 168px;
+  flex: none;
+  border: 0;
+  border-radius: 50%;
+  background: radial-gradient(circle at 50% 34%, var(--m-surface) 0%, var(--m-paper) 56%, var(--m-alt) 100%);
+  box-shadow: 0 12px 32px -14px #202a2224, 0 2px 8px #202a220a;
+  cursor: grab;
+  touch-action: none;
+}
+.music-app .music-volwheel::after { content: ""; position: absolute; inset: 15px; border-radius: 50%; box-shadow: inset 0 1px 3px #202a2212; pointer-events: none; }
+.music-app .music-volwheel:hover { box-shadow: 0 16px 38px -14px var(--m-accent-soft), 0 2px 8px #202a220a; }
+.music-app .music-volwheel.is-dragging { cursor: grabbing; }
+.music-app .music-volwheel:focus-visible { outline: 0; box-shadow: 0 0 0 3px var(--m-accent-soft), 0 16px 38px -14px var(--m-accent-soft); }
+.music-app .music-volwheel > svg { position: relative; z-index: 1; display: block; width: 100%; height: 100%; transform: rotate(-90deg); }
+/* The wheel is the Echo Connect one, down to its ink ring and the glow behind
+   it, so the two surfaces of the same speaker read as one control. The literal
+   stroke is deliberate (a token could paint the ring invisible against a light
+   card), and dark mode swaps both the ring and its glow in the block below. */
+.music-app .music-voltrack { stroke: var(--m-line); }
+.music-app .music-volarc { stroke: #111111; transition: stroke-dasharray .2s cubic-bezier(.2, .8, .3, 1); filter: drop-shadow(0 0 5px #7553cf6b); }
+.music-app .music-volhalo { position: absolute; inset: -18px; border-radius: 50%; background: radial-gradient(circle, #7553cf1f 0%, transparent 66%); opacity: .8; animation: music-halo 4.5s ease-in-out infinite alternate; pointer-events: none; }
+body.dark .music-app .music-volwheel { background: radial-gradient(circle at 50% 34%, #2b302c 0%, #242824 56%, #1d211e 100%); }
+body.dark .music-app .music-volarc { stroke: #f2f4ef; filter: drop-shadow(0 0 6px #a98fff8c); }
+body.dark .music-app .music-mute { background: radial-gradient(circle at 50% 30%, #2b302c 0%, #1d211e 100%); box-shadow: 0 10px 24px -16px #00000066, inset 0 1px 0 #ffffff1a; }
+body.dark .music-app .music-mute[aria-pressed="true"] { color: #f0d79a; background: radial-gradient(circle at 50% 30%, #3b3524 0%, #2c2819 100%); }
+.music-app .music-volctr { position: absolute; inset: 0; z-index: 2; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; text-align: center; pointer-events: none; }
+.music-app .music-volnum { font-size: 34px; line-height: 1; font-weight: 800; letter-spacing: -1px; font-variant-numeric: tabular-nums; color: var(--m-ink); }
+.music-app .music-volnum.is-muted { font-size: 19px; letter-spacing: 0; color: var(--m-muted); }
+.music-app .music-volhint { font-size: 9px; font-weight: 700; letter-spacing: .8px; text-transform: uppercase; color: var(--m-muted); }
+.music-app .music-volstep { display: flex; align-items: center; gap: 2px; padding: 4px; border-radius: 999px; background: var(--m-alt); }
+.music-app .music-volstep-div { width: 1px; height: 18px; margin: 0 2px; background: var(--m-line); }
+.music-app .music-volbtn { display: grid; place-items: center; width: 42px; height: 38px; padding: 0; border: 0; border-radius: 999px; background: transparent; color: var(--m-muted); font-size: 16px; font-weight: 700; line-height: 1; cursor: pointer; transition: background-color .15s, color .15s, transform .1s; }
+.music-app .music-volbtn:hover:not(:disabled) { background: var(--m-surface); color: var(--m-ink); }
+.music-app .music-volbtn:active:not(:disabled) { transform: scale(.9); }
+.music-app .music-volbtn:disabled { opacity: .28; cursor: default; }
+@keyframes music-halo { from { opacity: .55; transform: scale(.985); } to { opacity: .9; transform: scale(1.015); } }
+@media (prefers-reduced-motion: reduce) { .music-app .music-volhalo { animation: none; } }
+
+.music-app .music-state {
+  margin: 12px 0 0;
+  color: var(--m-muted);
+  font-size: 11px;
+  line-height: 1.55;
+}
+.music-app .music-error {
+  margin: 9px 0 0;
+  padding: 9px 12px;
+  border: 1px solid #e5cccc;
+  border-radius: 11px;
+  background: #fbeeee;
+  color: #8d4a4a;
+  font-size: 11px;
+  line-height: 1.55;
+}
+.music-app .music-error:empty { display: none; }
+body.dark .music-app .music-error { border-color: #70494a; background: #392628; color: #f0bdbe; }
+
+/* ── browse + search ─────────────────────────────────────────────────────── */
+
+.music-app .music-browse-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 10px;
+}
+.music-app .music-browse-head > div { min-width: 0; }
+
+.music-app .music-tabs {
+  display: flex;
+  gap: 6px;
+  margin: 14px 0 14px;
+  padding-bottom: 2px;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+}
+.music-app .music-tabs::-webkit-scrollbar { display: none; }
+.music-app .music-tabs button {
+  flex: 0 0 auto;
+  min-height: 40px;
+  padding: 0 15px;
+  border: 1px solid var(--m-line);
+  border-radius: 999px;
+  background: var(--m-paper);
+  color: var(--m-muted);
+  font-size: 11.5px;
+  font-weight: 750;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color .15s ease, color .15s ease, border-color .15s ease;
+}
+.music-app .music-tabs button:hover { border-color: var(--m-accent); color: var(--m-accent-ink); }
+.music-app .music-tabs button.active {
+  border-color: transparent;
+  background: var(--m-accent);
+  color: #fff;
+  box-shadow: 0 6px 16px -10px var(--m-accent-deep);
+}
+
+.music-app .music-search {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+.music-app .music-search input {
+  flex: 1;
+  min-width: 0;
+  height: 44px;
+  padding: 0 14px 0 40px;
+  border: 1px solid var(--m-line);
+  border-radius: 999px;
+  outline: 0;
+  background-color: var(--m-paper);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='15' height='15' viewBox='0 0 24 24' fill='none' stroke='%23687169' stroke-width='2.2' stroke-linecap='round'%3E%3Ccircle cx='11' cy='11' r='7'/%3E%3Cpath d='M16.5 16.5 21 21'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: 15px center;
+  background-size: 15px 15px;
+  font-size: 12.5px;
+  -webkit-appearance: none;
+  appearance: none;
+  transition: border-color .15s ease, box-shadow .15s ease, background-color .15s ease;
+}
+.music-app .music-search input::placeholder { color: var(--m-muted); }
+.music-app .music-search input:focus { border-color: var(--m-accent); background-color: var(--m-surface); }
+.music-app .music-search input::-webkit-search-cancel-button { cursor: pointer; }
+.music-app .music-search button {
+  flex: 0 0 auto;
+  min-width: 88px;
+  min-height: 44px;
+  padding: 0 16px;
+  border: 1px solid var(--m-line);
+  border-radius: 999px;
+  background: var(--m-accent-soft);
+  color: var(--m-accent-ink);
+  font-size: 11.5px;
+  font-weight: 750;
+  cursor: pointer;
+  transition: background-color .15s ease, border-color .15s ease, transform .12s ease;
+}
+.music-app .music-search button:hover { border-color: var(--m-accent); }
+.music-app .music-search button:active { transform: scale(.97); }
+.music-app .music-search button.is-busy { color: var(--m-muted); background: var(--m-alt); }
+
+.music-app .music-list {
+  display: grid;
+  gap: 2px;
+  max-height: min(54vh, 460px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--m-line) transparent;
+  -webkit-overflow-scrolling: touch;
+}
+.music-app .music-list::-webkit-scrollbar { width: 8px; }
+.music-app .music-list::-webkit-scrollbar-thumb { border-radius: 999px; background: var(--m-line); }
+
+/* Rows are the dashboard's .row: full-width, hairline separated, no boxes. */
+.music-app .music-row {
+  display: grid;
+  grid-template-columns: var(--m-row) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: var(--m-row);
+  padding: 6px 10px;
+  border: 0;
+  border-bottom: 1px solid var(--m-line);
+  border-radius: 12px;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  content-visibility: auto;
+  contain-intrinsic-size: var(--m-row);
+  transition: background-color .14s ease, color .14s ease;
+}
+.music-app .music-row:last-child { border-bottom-color: transparent; }
+.music-app .music-row img {
+  width: 42px;
+  height: 42px;
+  border-radius: 11px;
+  background: var(--m-alt);
+  object-fit: cover;
+}
+.music-app .music-row-art {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  border: 1px solid var(--m-line);
+  border-radius: 11px;
+  background: var(--m-alt);
+  color: var(--m-muted);
+  font-size: 16px;
+}
+/* A cover the provider resolved is an image; a playlist without one draws its
+   initials on a tint chosen from the playlist's own id, so the same playlist
+   always gets the same tile and a list of covers reads as covers. */
+.music-app .music-row-art[data-tone] {
+  border-color: transparent;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: .04em;
+  text-shadow: 0 1px 2px #0000002e;
+}
+.music-app .music-row-art[data-tone="0"] { background: linear-gradient(135deg, #7f9b8a, #4f6b5c); }
+.music-app .music-row-art[data-tone="1"] { background: linear-gradient(135deg, #8f8fb4, #565684); }
+.music-app .music-row-art[data-tone="2"] { background: linear-gradient(135deg, #b99a76, #7d5f3f); }
+.music-app .music-row-art[data-tone="3"] { background: linear-gradient(135deg, #7fa3b6, #46697c); }
+.music-app .music-row-art[data-tone="4"] { background: linear-gradient(135deg, #b58a9c, #7a4a5e); }
+.music-app .music-row-art[data-tone="5"] { background: linear-gradient(135deg, #9aa97d, #5f6d43); }
+.music-app .music-row-end { display: flex; align-items: center; gap: 9px; justify-content: flex-end; }
+.music-app .music-row strong {
+  display: block;
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.music-app .music-row span {
+  display: block;
+  overflow: hidden;
+  color: var(--m-muted);
+  font-size: 11px;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.music-app .music-row i {
+  color: var(--m-muted);
+  font-size: 11px;
+  font-style: normal;
+  font-variant-numeric: tabular-nums;
+}
+
+@media (hover: hover) {
+  .music-app .music-row:hover { background: var(--m-alt); }
+  .music-app .music-row:hover i { color: var(--m-accent-ink); }
+}
+.music-app .music-row:active { background: var(--m-accent-soft); }
+
+/* A tap is acknowledged before the speaker answers, and the row that owns the
+   stream stays marked for as long as it is the one playing. */
+.music-app .music-row.is-pending { background: var(--m-accent-soft); }
+.music-app .music-row.is-pending strong { color: var(--m-accent-ink); }
+.music-app .music-row.is-playing { background: var(--m-accent-soft); }
+.music-app .music-row.is-playing strong { color: var(--m-accent-ink); font-weight: 750; }
+
+/* Each track row is a sibling pair: the row itself plus an add-to-queue control.
+   The control is a sibling, never a button nested inside the row button. */
+.music-app .music-row-wrap { display: flex; align-items: center; gap: 4px; border-bottom: 1px solid var(--m-line); }
+.music-app .music-row-wrap:last-child { border-bottom-color: transparent; }
+.music-app .music-row-wrap .music-row { flex: 1 1 auto; min-width: 0; border-bottom-color: transparent; }
+.music-app .music-queue-add { flex: none; display: grid; place-items: center; width: 38px; height: 38px; border: 1px solid var(--m-line); border-radius: 999px; background: var(--m-alt); color: var(--m-ink); font-size: 16px; font-weight: 700; line-height: 1; cursor: pointer; transition: background-color .15s, border-color .15s, transform .12s; }
+.music-app .music-queue-add:hover { border-color: var(--m-accent); background: var(--m-accent-soft); }
+.music-app .music-queue-add:active { transform: scale(.92); }
+/* "This song and every song under it": the plus with a downward arrow, so the
+   two controls beside a row never read as the same button. */
+.music-app .music-queue-range { font-size: 15px; color: var(--m-muted); }
+.music-app .music-queue-range:hover { color: var(--m-ink); }
+
+/* ── queue ──────────────────────────────────────────────────────────────── */
+.music-app .music-queue-count { color: var(--m-muted); font-size: 11px; font-weight: 700; }
+.music-app .music-queue-actions { display: flex; gap: 8px; }
+.music-app .music-queue-actions button { min-height: 34px; padding: 0 12px; border: 1px solid var(--m-line); border-radius: 999px; background: var(--m-alt); color: var(--m-accent-ink); font-size: 11px; font-weight: 700; cursor: pointer; transition: background-color .15s, border-color .15s, transform .12s; }
+.music-app .music-queue-actions button:hover:not(:disabled) { border-color: var(--m-accent); background: var(--m-accent-soft); }
+.music-app .music-queue-actions button:active:not(:disabled) { transform: scale(.96); }
+.music-app .music-queue-actions button:disabled { opacity: .4; cursor: default; }
+.music-app .music-queue-list { margin-top: 10px; max-height: min(58vh, 460px); }
+/* Up next is the panel's own column: it stands beside the player, so it keeps
+   the height of the page rather than hiding half of what is queued. */
+.music-app .music-queue-card { position: sticky; top: 12px; }
+/* The row is a mouse grab handle; `pan-y` leaves a finger's vertical swipe to
+   the list's own scrolling, so reordering on a touch screen is done from the
+   grip, whose own `touch-action: none` keeps the gesture instead of scrolling. */
+.music-app .music-queue-row { display: grid; grid-template-columns: 24px 34px 38px minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 6px 8px; border-bottom: 1px solid var(--m-line); border-radius: 12px; cursor: grab; touch-action: pan-y; }
+.music-app .music-queue-row.is-dragging { opacity: .55; cursor: grabbing; background: var(--m-alt); }
+.music-app .music-queue-list.is-reordering { cursor: grabbing; }
+/* A drop line says where the row will land: the queue is arranged by dragging,
+   so the drop position has to be visible before the thumb lets go. */
+.music-app .music-queue-row.is-drop-before { box-shadow: inset 0 3px 0 var(--m-accent); }
+.music-app .music-queue-row.is-drop-after { box-shadow: inset 0 -3px 0 var(--m-accent); }
+.music-app .music-queue-grip { display: grid; place-items: center; min-height: 34px; color: var(--m-muted); font-size: 15px; line-height: 1; text-align: center; cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none; }
+.music-app .music-queue-row:last-child { border-bottom-color: transparent; }
+.music-app .music-queue-row.is-current { background: var(--m-accent-soft); }
+.music-app .music-queue-row.is-current strong { color: var(--m-accent-ink); font-weight: 750; }
+.music-app .music-queue-row > img, .music-app .music-queue-row .music-row-art { width: 38px; height: 38px; border-radius: 10px; background: var(--m-alt); object-fit: cover; }
+.music-app .music-queue-row strong { display: block; overflow: hidden; font-size: 13px; font-weight: 600; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
+.music-app .music-queue-row span { display: block; overflow: hidden; color: var(--m-muted); font-size: 11px; line-height: 1.4; text-overflow: ellipsis; white-space: nowrap; }
+.music-app .music-queue-play,
+.music-app .music-queue-remove { display: grid; place-items: center; width: 32px; height: 32px; border: 1px solid var(--m-line); border-radius: 999px; background: var(--m-surface); color: var(--m-accent-ink); font-size: 12px; line-height: 1; cursor: pointer; transition: background-color .15s, border-color .15s, transform .12s; }
+.music-app .music-queue-play:hover, .music-app .music-queue-remove:hover { border-color: var(--m-accent); background: var(--m-accent-soft); }
+.music-app .music-queue-play:active, .music-app .music-queue-remove:active { transform: scale(.92); }
+.music-app .music-queue-remove { color: var(--m-muted); }
+.music-app .music-queue-list .music-empty { margin-top: 6px; }
+@media (max-width: 760px) {
+  /* A phone reorders from the grip, so it has to stay and grow to a thumb: a
+     drag from the row's body is left to the list's vertical scrolling. */
+  .music-app .music-queue-row { grid-template-columns: 30px 30px 34px minmax(0, 1fr) auto; cursor: default; }
+  .music-app .music-queue-grip { min-width: 30px; min-height: 42px; font-size: 17px; }
+}
+
+.music-app .music-bars[hidden] { display: none; }
+.music-app .music-bars {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 2px;
+  width: 14px;
+  height: 14px;
+}
+.music-app .music-bars span {
+  width: 3px;
+  border-radius: 2px;
+  background: var(--m-accent);
+  animation: music-bars 1s ease-in-out infinite;
+}
+.music-app .music-bars span:nth-child(1) { height: 40%; animation-delay: -.3s; }
+.music-app .music-bars span:nth-child(2) { height: 90%; animation-delay: -.15s; }
+.music-app .music-bars span:nth-child(3) { height: 60%; }
+@keyframes music-bars {
+  0%, 100% { transform: scaleY(.45); }
+  50% { transform: scaleY(1); }
+}
+
+.music-app .music-skeleton { display: grid; gap: 2px; padding: 2px 0; }
+.music-app .music-skeleton span {
+  display: block;
+  height: var(--m-row);
+  border-radius: 12px;
+  background: linear-gradient(90deg, var(--m-alt), var(--m-surface), var(--m-alt));
+  background-size: 200% 100%;
+  animation: music-shimmer 1.1s linear infinite;
+}
+@keyframes music-shimmer {
+  from { background-position: 120% 0; }
+  to { background-position: -120% 0; }
+}
+
+.music-app .music-empty {
+  margin: 2px 0 0;
+  color: var(--m-muted);
+  font-size: 11.5px;
+  line-height: 1.6;
+}
+.music-app .music-empty[hidden] { display: none; }
+
+/* ── lyrics ──────────────────────────────────────────────────────────────── */
+
+.music-app .music-lyrics {
+  max-height: min(44vh, 400px);
+  padding: 2px 8px 2px 2px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scroll-behavior: auto;
+  scrollbar-width: thin;
+  -webkit-overflow-scrolling: touch;
+  mask-image: linear-gradient(180deg, transparent 0, #000 16px, #000 calc(100% - 20px), transparent 100%);
+}
+.music-app .music-lyrics p {
+  margin: 0 0 10px;
+  color: var(--m-muted);
+  font-size: 13px;
+  line-height: 1.6;
+  transition: color .18s ease, transform .18s ease;
+}
+.music-app .music-lyrics p.active {
+  color: var(--m-ink);
+  font-size: 14px;
+  font-weight: 700;
+  transform: translateX(4px);
+}
+.music-app .music-lyrics p:last-child { margin-bottom: 0; }
+
+/* ── sticky mini bar (phones) ────────────────────────────────────────────── */
+
+/* The mini bar is a status strip that leads back to the hub: artwork, what is
+   playing, a live meter. It carries no transport of its own, so a phone never
+   shows the same control twice. */
+.music-app .music-mini {
+  position: fixed;
+  right: 12px;
+  bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+  left: 12px;
+  z-index: 40;
+  display: none;
+  grid-template-columns: 42px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 58px;
+  padding: 8px 12px;
+  border: 1px solid var(--m-line);
+  border-radius: 16px;
+  background: var(--m-surface);
+  color: var(--m-ink);
+  font: inherit;
+  text-align: left;
+  box-shadow: 0 18px 40px -22px #202a2280;
+  cursor: pointer;
+  transition: border-color .15s ease, box-shadow .18s ease, transform .12s ease;
+}
+.music-app .music-mini:hover { border-color: var(--m-accent); box-shadow: 0 18px 40px -20px #202a2290; }
+.music-app .music-mini:active { transform: scale(.99); }
+.music-app .music-mini[hidden] { display: none !important; }
+/* Only one of the artwork and its fallback is ever laid out: the rule is
+   repeated here so the page is self-contained in a host without a global
+   [hidden] reset. */
+.music-app .music-mini img[hidden],
+.music-app .music-mini .music-mini-art[hidden] { display: none; }
+.music-app .music-mini img,
+.music-app .music-mini .music-mini-art {
+  width: 42px;
+  height: 42px;
+  border-radius: 11px;
+  border: 1px solid var(--m-line);
+  background: var(--m-alt);
+  object-fit: cover;
+}
+.music-app .music-mini div { min-width: 0; }
+.music-app .music-mini strong {
+  display: block;
+  overflow: hidden;
+  font-size: 12.5px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.music-app .music-mini span {
+  display: block;
+  overflow: hidden;
+  color: var(--m-muted);
+  font-size: 10.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.music-app .music-mini .music-bars { flex: none; }
+.music-app .music-mini:focus-visible { outline: 0; box-shadow: 0 0 0 3px var(--m-accent-soft), 0 18px 40px -22px #202a2280; }
+
+/* ── queue mode + library actions ─────────────────────────────────────────
+   Four equal-weight pills under the transport: shuffle and repeat change how
+   the queue plays, like and playlist write to the user's own library. */
+.music-app .music-extras { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.music-app .music-extra {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 38px;
+  padding: 0 13px;
+  border: 1px solid var(--m-line);
+  border-radius: 999px;
+  background: var(--m-surface);
+  color: var(--m-accent-ink);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color .15s ease, border-color .15s ease, color .15s ease, transform .12s ease;
+}
+.music-app .music-extra:hover:not(:disabled) { border-color: var(--m-accent); background: var(--m-accent-soft); }
+.music-app .music-extra:active:not(:disabled) { transform: scale(.96); }
+.music-app .music-extra:disabled { opacity: .45; cursor: default; }
+.music-app .music-extra.is-on,
+.music-app .music-extra[aria-pressed="true"] { border-color: var(--m-accent); background: var(--m-accent-soft); color: var(--m-accent-ink); }
+.music-app .music-extra:focus-visible { outline: 0; box-shadow: 0 0 0 3px var(--m-accent-soft); }
+
+/* The playlist picker is a disclosure panel, not a floating menu: it cannot be
+   clipped by the card and it reads the same on a phone. */
+.music-app .music-picker { display: grid; gap: 10px; margin-top: 12px; padding: 14px; border: 1px solid var(--m-line); border-radius: 14px; background: var(--m-alt); }
+.music-app .music-picker[hidden] { display: none; }
+.music-app .music-picker-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.music-app .music-picker-head strong { display: block; margin-top: 3px; font: 600 15px Georgia, serif; }
+.music-app .music-picker-close { display: grid; place-items: center; width: 30px; height: 30px; flex: none; border: 1px solid var(--m-line); border-radius: 999px; background: var(--m-surface); color: var(--m-muted); font-size: 13px; line-height: 1; cursor: pointer; }
+.music-app .music-picker-close:hover { border-color: var(--m-accent); color: var(--m-accent-ink); }
+.music-app .music-picker-list { display: grid; gap: 4px; max-height: min(30vh, 240px); overflow-y: auto; overscroll-behavior: contain; }
+.music-app .music-picker-row { display: grid; grid-template-columns: 34px minmax(0, 1fr); align-items: center; gap: 10px; width: 100%; padding: 6px 8px; border: 1px solid transparent; border-radius: 11px; background: var(--m-surface); color: var(--m-ink); text-align: left; cursor: pointer; transition: border-color .15s, background-color .15s, transform .12s; }
+.music-app .music-picker-row:hover { border-color: var(--m-accent); background: var(--m-accent-soft); }
+.music-app .music-picker-row:active { transform: scale(.99); }
+.music-app .music-picker-row > img,
+.music-app .music-picker-row .music-row-art { width: 34px; height: 34px; border-radius: 9px; background: var(--m-alt); object-fit: cover; }
+.music-app .music-picker-row strong { display: block; overflow: hidden; font-size: 13px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+.music-app .music-picker-row span { display: block; color: var(--m-muted); font-size: 11px; }
+.music-app .music-picker-new { display: flex; gap: 8px; }
+.music-app .music-picker-new input { flex: 1; min-width: 0; height: 38px; padding: 0 12px; border: 1px solid var(--m-line); border-radius: 10px; outline: 0; color: var(--m-ink); background: var(--m-surface); font-size: 12px; }
+.music-app .music-picker-new input:focus { border-color: var(--m-accent); box-shadow: 0 0 0 3px var(--m-accent-soft); }
+.music-app .music-picker-new .secondary { min-height: 38px; padding: 0 14px; border: 1px solid var(--m-line); border-radius: 10px; background: var(--m-surface); color: var(--m-accent-ink); font-size: 12px; font-weight: 700; cursor: pointer; }
+.music-app .music-picker-new .secondary:hover:not(:disabled) { border-color: var(--m-accent); background: var(--m-accent-soft); }
+.music-app .music-picker-new .secondary:disabled { opacity: .45; cursor: default; }
+.music-app .music-picker .music-empty { margin: 0; }
+
+/* ── breakpoints ─────────────────────────────────────────────────────────── */
+
+@media (max-width: 1080px) {
+  /* One column, and the queue goes back under the player it follows: on a
+     narrow screen "Up next" is read after what is playing, not beside it. */
+  .music-app .music-grid {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      "player"
+      "queue"
+      "browse"
+      "lyrics";
+  }
+  .music-app .music-queue-card { position: static; }
+  .music-app .music-hero-art { max-width: min(300px, 56vw); }
+}
+
+@media (max-width: 760px) {
+  .music-app { gap: 14px; padding-bottom: 76px; }
+  .music-app .music-card { border-radius: 16px; }
+  .music-app .music-card + .music-card { margin-top: 14px; }
+  .music-app .music-hero { grid-template-columns: minmax(0, 1fr); gap: 18px; }
+  .music-app .music-hero-art { max-width: none; }
+  /* The hub keeps its shape on a phone: play, wheel and mute across one row at
+     thumb size, with the stepper under it. */
+  .music-app .music-hub { gap: 10px; }
+  .music-app .music-round { width: 58px; height: 58px; }
+  .music-app .music-play { width: 68px; height: 68px; }
+  .music-app .music-list { max-height: none; overflow-y: visible; }
+  .music-app .music-lyrics { max-height: 40vh; }
+  .music-app .music-mini { display: grid; }
+  .music-app .music-tabs { margin-right: -4px; margin-left: -4px; padding: 0 4px 2px; }
+  /* Two pills per row, so the labels stay readable on a phone. */
+  .music-app .music-extra { flex: 1 1 calc(50% - 4px); }
+  .music-app .music-picker { padding: 12px; }
+}
+
+@media (max-width: 520px) {
+  .music-app .music-card { padding: 15px; }
+  .music-app .music-card > h3 { font-size: 18px; }
+  .music-app .music-row { grid-template-columns: 44px minmax(0, 1fr) auto; gap: 10px; padding: 6px; }
+  .music-app .music-row img,
+  .music-app .music-row-art { width: 40px; height: 40px; }
+  .music-app .music-row-end { gap: 6px; }
+  .music-app .music-bars { width: 12px; }
+  .music-app .music-bars span { width: 2px; }
+  .music-app .music-volwheel { width: 148px; height: 148px; }
+  .music-app .music-round { width: 54px; height: 54px; font-size: 10.5px; }
+  .music-app .music-play { width: 60px; height: 60px; }
+  .music-app .music-mute svg { width: 17px; height: 17px; }
+  .music-app .music-search button { min-width: 72px; padding: 0 12px; }
+}
+
+@media (max-width: 400px) {
+  .music-app .music-hero-copy { min-width: 0; }
+  .music-app .music-now-title { font-size: 19px; }
+  .music-app .music-hub { gap: 8px; }
+  .music-app .music-round { width: 50px; height: 50px; gap: 2px; }
+  .music-app .music-play { width: 57px; height: 57px; }
+  .music-app .music-round-label { font-size: 9px; }
+  .music-app .music-volwheel { width: 132px; height: 132px; }
+  .music-app .music-volnum { font-size: 27px; }
+  .music-app .music-mini { gap: 8px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .music-app .music-bars span,
+  .music-app .music-skeleton span,
+  .music-app .music-vinyl::before,
+  .music-app .music-badge.is-live::before { animation: none; }
+  .music-app .music-progress > span,
+  .music-app .music-row,
+  .music-app .music-lyrics p,
+  .music-app .music-hero-art::before { transition: none; }
+  .music-app .music-lyrics p.active { transform: none; }
+  .music-app .music-round:active,
+  .music-app .music-mini:active { transform: none; }
+  .music-app .music-mute .music-mute-slash,
+  .music-app .music-mute .music-mute-waves { transition: none; }
+}

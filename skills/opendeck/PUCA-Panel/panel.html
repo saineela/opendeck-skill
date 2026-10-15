@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="en" class="night">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="color-scheme" content="dark light" />
+<meta name="theme-color" content="#04050a" id="metaTheme" />
+<title>PUCA Panel</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='24' fill='%23050508'/><path d='M38 68V38l26-6v30' stroke='%23ffffff' stroke-width='8' fill='none' stroke-linecap='round' stroke-linejoin='round'/><circle cx='30' cy='68' r='9' fill='%23ffffff'/><circle cx='56' cy='62' r='9' fill='%23ffffff'/></svg>" />
+<!-- The wall's own fonts, served from this box (fonts.css + fonts/), not from
+     a font CDN: a display on a wall has to paint itself with no internet. -->
+<link rel="stylesheet" href="fonts.css" />
+<link rel="stylesheet" href="panel.css" />
+</head>
+<body>
+
+<!-- ===================================================== BURN-IN DRIFT -->
+<div class="drift">
+
+<!-- ============================================================== TOP -->
+<header class="top">
+  <!-- The brand is the mark and nothing else: the NIX PUCA logo drawn straight
+       onto the header (panel.css tints it into the theme's foreground), with
+       the panel's note underneath as the fallback for an artwork that cannot
+       be read. No plate, no shadow, no lettering. -->
+  <div class="brand">
+    <span class="logo" id="brandLogo">
+      <img src="puca-logo.png" width="480" height="151" alt="NIX PUCA" decoding="async" />
+      <svg viewBox="0 0 100 100" aria-hidden="true"><path d="M38 68V38l26-6v30" fill="none" stroke="currentColor" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/><circle cx="30" cy="68" r="9" fill="currentColor"/><circle cx="56" cy="62" r="9" fill="currentColor"/></svg>
+    </span>
+  </div>
+
+  <form class="searchbar" id="searchForm" autocomplete="off">
+    <svg class="lens" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="2.4"/><path d="M16.5 16.5 21 21" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>
+    <input id="searchInput" type="search" placeholder="Search songs, artists, playlists — or just say it" aria-label="Search music" />
+    <button type="button" class="mic" id="micBtn" aria-label="Search by voice" title="Tap, then speak">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3" fill="none" stroke="currentColor" stroke-width="2.2"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+      <span class="pulse" aria-hidden="true"></span>
+    </button>
+    <button type="submit" class="go">Go</button>
+  </form>
+
+  <div class="clockbox" id="clockbox">
+    <span class="t" id="clock">--:--</span>
+    <span class="ap" id="ampm"></span>
+    <span class="daylight" id="daylight"><i></i><em>auto</em></span>
+  </div>
+</header>
+
+<!-- ============================================================= MAIN -->
+<main class="grid">
+
+  <!-- hero + shelves share one column, so the shelf area always keeps
+       whatever height the hero does not need -->
+  <div class="left">
+
+  <!-- ------------------------------------------------------ now playing -->
+  <section class="hero" id="hero">
+    <div class="artwrap">
+      <div class="art" id="heroArt">
+        <img id="heroImg" alt="" hidden />
+        <span class="glyph" id="heroGlyph">♪</span>
+      </div>
+      <div class="glow" id="heroGlow" aria-hidden="true"></div>
+    </div>
+
+    <div class="meta">
+      <p class="eyebrow">
+        <span class="dot" id="npDot"></span>
+        <span id="npSource">Nothing playing</span>
+      </p>
+      <h1 id="npTitle">Nothing playing</h1>
+      <p class="artist" id="npArtist">Tap a playlist below, or say a song name</p>
+      <p class="album" id="npAlbum"></p>
+
+      <div class="slider scrub" id="scrub" role="slider" tabindex="0"
+           aria-label="Seek through the track" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+        <div class="track"><div class="fill"></div><div class="loaded"></div></div>
+        <div class="knob"></div>
+      </div>
+      <div class="times"><span id="tCur">0:00</span><span id="tLeft">--:--</span></div>
+
+      <div class="controls">
+        <button class="chip" id="btnShuffle" title="Shuffle">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 4h4v4M20 4l-6 6M4 20l6-6M16 20h4v-4M4 4l5 5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span>Shuffle</span>
+        </button>
+        <button class="round" id="btnPrev" title="Previous track" aria-label="Previous track">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 5v14L7 12zM6 5v14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <button class="round play" id="btnPlay" title="Play or pause" aria-label="Play or pause">
+          <svg class="ic-play" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4.5v15l13-7.5z" fill="currentColor"/></svg>
+          <svg class="ic-pause" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4h4v16H7zM13 4h4v16h-4z" fill="currentColor"/></svg>
+        </button>
+        <button class="round" id="btnNext" title="Next track" aria-label="Next track">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5v14l11-7zM18 5v14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <button class="chip" id="btnRepeat" title="Repeat">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9a5 5 0 0 1 5-5h9l-3-3M20 15a5 5 0 0 1-5 5H6l3 3" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span id="repeatLabel">Repeat</span>
+        </button>
+      </div>
+
+      <div class="volumerow">
+        <button class="vol" id="btnMute" title="Mute" aria-label="Mute">
+          <svg class="ic-vol" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5h4L13 5v14l-5-4.5H4z" fill="currentColor"/><path class="w1" d="M16.5 9a4.5 4.5 0 0 1 0 6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/><path class="w2" d="M19 6.5a8 8 0 0 1 0 11" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+          <svg class="ic-muted" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5h4L13 5v14l-5-4.5H4z" fill="currentColor"/><path d="M17 9.5l4.5 5M21.5 9.5l-4.5 5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+        </button>
+        <div class="slider vol" id="volSlider" role="slider" tabindex="0"
+             aria-label="Volume" aria-valuemin="0" aria-valuemax="100" aria-valuenow="60">
+          <div class="track"><div class="fill"></div></div>
+          <div class="knob"></div>
+        </div>
+        <span class="pct" id="volPct">60%</span>
+        <button class="chip" id="btnLyrics" title="Show or hide lyrics">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 6h14M5 11h14M5 16h9" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+          <span>Lyrics</span>
+        </button>
+      </div>
+    </div>
+  </section>
+
+  <!-- --------------------------------------------------------- shelves -->
+  <section class="shelves" id="shelves"></section>
+
+  </div><!-- /left -->
+
+  <!-- ---------------------------------------------------------- up next -->
+  <section class="side">
+    <div class="side-head">
+      <h2>Up next</h2>
+      <button class="tiny" id="btnClearQueue">Clear</button>
+    </div>
+    <ol class="queue" id="queue"></ol>
+    <p class="empty" id="queueEmpty">Queue is empty — say a song name to add it.</p>
+  </section>
+
+</main>
+
+</div><!-- /drift -->
+
+<!-- =========================================================== SEARCH -->
+<section class="sheet" id="resultsSheet" hidden>
+  <header>
+    <span id="resultsTitle">Results</span>
+    <button class="tiny" id="resultsClose" aria-label="Close results">Close</button>
+  </header>
+  <div class="results" id="results"></div>
+  <p class="hint" id="resultsHint"></p>
+</section>
+
+<!-- ============================================================= ASK -->
+<div class="overlay ask" id="askOverlay" hidden>
+  <div class="ask-card">
+    <p class="ask-eyebrow" id="askEyebrow">Nix PUCA is not sure</p>
+    <h2 id="askPrompt">Which one did you mean?</h2>
+    <p class="ask-heard" id="askHeard"></p>
+    <div class="ask-options" id="askOptions"></div>
+    <div class="ask-foot">
+      <button type="button" class="mic-hint" id="askMicHint">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3" fill="none" stroke="currentColor" stroke-width="2.2"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+        <span id="askMicHintText">Tap a card, or tap here and say “two”</span>
+      </button>
+      <button class="ghost" id="askCancel">Never mind</button>
+    </div>
+  </div>
+</div>
+
+<!-- ========================================================== LYRICS -->
+<div class="overlay lyrics" id="lyricsOverlay" hidden>
+  <div class="lyr-bg" id="lyrBg" aria-hidden="true"></div>
+  <header class="lyr-head">
+    <div class="lyr-now">
+      <span class="np-title" id="lyrTitle">Lyrics</span>
+      <span class="np-artist" id="lyrArtist"></span>
+    </div>
+    <button class="lyr-close" id="lyrClose" aria-label="Hide lyrics">
+      <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"/></svg>
+      <span>Hide</span>
+    </button>
+  </header>
+  <div class="lyr-scroller" id="lyrScroller">
+    <div class="lyr-lines" id="lyrLines"></div>
+  </div>
+  <footer class="lyr-foot">
+    <!-- Always here: for every track, with or without words, opened by the
+         panel or by hand. The label is what makes it read as a control from
+         across a room — two letters in a corner do not. -->
+    <div class="lyr-zoom" id="lyrZoom" role="group" aria-label="Lyrics text size">
+      <span class="lyr-zoom-label" aria-hidden="true">Text</span>
+      <button type="button" id="lyrZoomOut" aria-label="Smaller lyrics" title="Smaller words">A−</button>
+      <button type="button" id="lyrZoomIn" aria-label="Larger lyrics" title="Larger words">A+</button>
+    </div>
+    <div class="slider scrub thin" id="lyrScrub" role="slider" tabindex="0" aria-label="Seek">
+      <div class="track"><div class="fill"></div></div>
+      <div class="knob"></div>
+    </div>
+    <div class="lyr-times"><span id="lyrCur">0:00</span><span id="lyrLeft">--:--</span></div>
+  </footer>
+</div>
+
+<div class="toast" id="toast" hidden></div>
+<audio id="audio" preload="none"></audio>
+
+<script src="panel.js"></script>
+</body>
+</html>

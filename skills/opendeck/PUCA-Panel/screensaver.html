@@ -1,0 +1,687 @@
+<!DOCTYPE html>
+<html lang="en" class="night">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="color-scheme" content="dark light" />
+<meta name="theme-color" content="#04050a" id="metaTheme" />
+<title>cat eyes</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 42'><path fill='%23fff' d='M3 34C18 2 82 2 97 34 82 18 18 18 3 34Z'/></svg>" />
+<!-- The idle page's fonts come from this box too (fonts.css, beside it in the
+     package), so a wall with no internet still draws its own type. -->
+<link rel="stylesheet" href="fonts.css" />
+<style>
+  /* ============================================================
+     CONFIG lives in the script at the bottom of this file:
+
+       clock:  "below" | "above" | "hidden"
+       theme:  "auto"  | "night" | "day"
+       keepAwake, size
+
+     It can also be overridden from the address bar, which is how you
+     set it per device without editing anything:
+
+       eyes.html?clock=above&theme=night&size=1.2&awake=0
+     ============================================================ */
+  :root {
+    --eye-size: 1;                                  /* set from CONFIG */
+    /* One eye's width: read from across a room. The pair is 2.28 x this (two
+       eyes and the gap), which is what bounds it, so 40vw is the ceiling that
+       keeps them on the screen even on a tall panel, and 52vh is what they grow
+       to on a wall. `size` enlarges them further - but never past that ceiling,
+       or a bigger cat would walk off the edge of the panel. */
+    --eye-w: min(calc(clamp(120px, min(40vw, 52vh), 1100px) * var(--eye-size)), 40vw);
+    --eye-gap: calc(var(--eye-w) * .28);
+    --clock-size: calc(var(--eye-w) * .52);
+    --clock-gap: clamp(10px, 2vh, 30px);
+    --font-round: "Baloo 2", ui-rounded, "SF Pro Rounded", "Segoe UI Variable Display", "Nunito", system-ui, -apple-system, sans-serif;
+    --ease: cubic-bezier(.22, .9, .3, 1);
+    --bounce: cubic-bezier(.2, 1.35, .38, 1);
+  }
+
+  /* night (22:00-06:00) = black background, white eyes
+     day   (06:00-22:00) = white background, black eyes   */
+  :root.night {
+    --bg: #04050a;
+    --bg-tint: rgba(120, 180, 255, .10);
+    --tint: rgba(126, 196, 255, .16);
+    --text: #f5f7ff;
+    --ink: #ffffff;
+    --ink-filter: drop-shadow(0 0 14px rgba(255, 255, 255, .55)) drop-shadow(0 0 56px rgba(140, 200, 255, .32));
+    --glow: rgba(126, 196, 255, .30);
+  }
+  :root.day {
+    --bg: #ffffff;
+    --bg-tint: rgba(255, 205, 165, .07);
+    --tint: rgba(255, 205, 160, .09);
+    --text: #0b0b12;
+    --ink: #0b0b12;
+    --ink-filter: drop-shadow(0 7px 14px rgba(11, 11, 18, .22));
+    --glow: rgba(255, 196, 130, .30);
+  }
+
+  *, *::before, *::after {
+    box-sizing: border-box;
+    transition: background-color .9s ease, border-color .9s ease, color .9s ease,
+                fill .9s ease, stroke .9s ease, box-shadow .9s ease, opacity .7s ease;
+  }
+
+  html { height: 100%; background: var(--bg); }
+  body {
+    margin: 0;
+    height: 100%;
+    overflow: hidden;
+    background: transparent;
+    color: var(--text);
+    font-family: var(--font-round);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    touch-action: manipulation;
+    overscroll-behavior: none;
+    -webkit-user-select: none; user-select: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+  /* a wall display has no use for a mouse pointer sitting on it */
+  body.idle { cursor: none; }
+
+  /* ============================================================ BACKDROP */
+  .bg { position: fixed; inset: 0; pointer-events: none; overflow: hidden; }
+  .bg::after {
+    content: "";
+    position: absolute; inset: -10%;
+    background:
+      radial-gradient(circle at 50% 46%, var(--bg-tint), transparent 58%),
+      radial-gradient(circle at 50% 120%, var(--tint), transparent 62%);
+  }
+  .layer-night, .layer-day { position: absolute; inset: 0; }
+  .layer-night { opacity: 1; }
+  .layer-day   { opacity: 0; }
+  :root.day .layer-night { opacity: 0; }
+  :root.day .layer-day   { opacity: 1; }
+
+  .star {
+    position: absolute; border-radius: 50%;
+    background: #fff;
+    box-shadow: 0 0 8px rgba(255, 255, 255, .8);
+    animation: twinkle var(--d, 3s) ease-in-out var(--delay, 0s) infinite;
+  }
+  @keyframes twinkle {
+    0%, 100% { opacity: .18; transform: scale(.7); }
+    50%      { opacity: .95; transform: scale(1.15); }
+  }
+  .orb {
+    position: absolute; border-radius: 50%;
+    background: radial-gradient(circle at 35% 32%, #fff, rgba(255, 220, 190, .55));
+    filter: blur(.4px);
+    opacity: .7;
+    animation: drift var(--d, 22s) ease-in-out var(--delay, 0s) infinite;
+  }
+  @keyframes drift {
+    0%   { transform: translate(0, 0) scale(1); }
+    50%  { transform: translate(18px, -34px) scale(1.08); }
+    100% { transform: translate(0, 0) scale(1); }
+  }
+
+  /* a meteor: head leading down-left, tail fading back toward the top right.
+     Lives in the night layer, so daylight hides it without extra work. */
+  .shoot {
+    position: absolute; width: 0; height: 0;
+    animation: shoot var(--dur, 1.6s) cubic-bezier(.3, .5, .6, 1) forwards;
+    will-change: transform, opacity;
+  }
+  .shoot i {
+    position: absolute; right: 0; top: 0;
+    width: var(--len, 160px); height: var(--w, 2px);
+    margin-top: calc(var(--w, 2px) / -2);
+    border-radius: 99px;
+    transform-origin: 100% 50%;
+    transform: rotate(var(--angle, 151deg));
+    background: linear-gradient(to right, rgba(255, 255, 255, 0), rgba(255, 255, 255, .95));
+    filter: drop-shadow(0 0 5px rgba(255, 255, 255, .7));
+  }
+  @keyframes shoot {
+    0%   { opacity: 0; transform: translate(0, 0); }
+    9%   { opacity: 1; }
+    68%  { opacity: 1; }
+    100% { opacity: 0; transform: translate(var(--dx, -400px), var(--dy, 220px)); }
+  }
+
+  /* ============================================================ STAGE
+     One box, centred on the screen no matter how far the eyes overflow
+     it, with a slow orbit so no pixel of a 24/7 panel sits still. */
+  .stage {
+    position: fixed; inset: 0;
+    display: grid; place-items: center;
+    grid-template-columns: 100%; grid-template-rows: 100%;
+    justify-content: center; align-content: center;
+    animation: burnin 480s ease-in-out infinite;
+  }
+  @keyframes burnin {
+    0%   { transform: translate(0, 0); }
+    22%  { transform: translate(13px, -9px); }
+    45%  { transform: translate(-5px, -15px); }
+    68%  { transform: translate(-13px, 6px); }
+    88%  { transform: translate(7px, 14px); }
+    100% { transform: translate(0, 0); }
+  }
+
+  .creature {
+    position: relative;
+    width: calc(var(--eye-w) * 2.3); height: calc(var(--eye-w) * .9);
+    animation: enter 1s var(--bounce) both;
+  }
+  @keyframes enter {
+    0%   { opacity: 0; transform: scale(.5) translateY(26px); }
+    100% { opacity: 1; transform: scale(1) translateY(0); }
+  }
+
+  .floater {
+    position: absolute; inset: 0;
+    display: grid; place-items: center;
+    grid-template-columns: 100%; grid-template-rows: 100%;
+    justify-content: center; align-content: center;
+    animation: bob 5.4s ease-in-out .6s infinite;
+  }
+  @keyframes bob {
+    0%, 100% { transform: translateY(0) rotate(0deg); }
+    50%      { transform: translateY(-9px) rotate(-.7deg); }
+  }
+
+  .halo {                       /* bloom behind the eyes */
+    position: absolute; left: 50%; top: 50%;
+    margin-left: calc(var(--eye-w) * -1.3);
+    margin-top: calc(var(--eye-w) * -.75);
+    width: calc(var(--eye-w) * 2.6); height: calc(var(--eye-w) * 1.5);
+    border-radius: 50%;
+    background: radial-gradient(closest-side, var(--glow), transparent 74%);
+    filter: blur(22px);
+    animation: haloPulse 5.8s ease-in-out infinite;
+  }
+  @keyframes haloPulse {
+    0%, 100% { opacity: .5; transform: scale(.94); }
+    50%      { opacity: 1;  transform: scale(1.06); }
+  }
+
+  /* ============================================================ THE EYES
+     Two cat-eye strokes: a uniform, round-capped arc that closes to a
+     line when it blinks. No face, no pupils, no timer, no chrome. */
+  .face { position: relative; animation: breathe 4.8s ease-in-out infinite; }
+  @keyframes breathe {
+    0%, 100% { transform: scale(1, 1); }
+    50%      { transform: scale(1.018, 1.028); }
+  }
+  .face.squish { animation: squish .55s var(--ease); }
+  @keyframes squish {
+    0%   { transform: scale(1); }
+    28%  { transform: scale(1.14, .86); }
+    58%  { transform: scale(.95, 1.07); }
+    100% { transform: scale(1); }
+  }
+
+  .head { display: flex; align-items: center; will-change: transform; }
+
+  .eyes {
+    display: flex; align-items: center; gap: var(--eye-gap);
+    transition: transform .34s var(--bounce);
+  }
+  .eyes.perk { transform: scaleY(1.16) translateY(-3%); }
+  .face.happy .eyes { transform: scaleY(1.22) translateY(-4%); }
+  .face.happy .cateye { animation-duration: 3.1s; }
+
+  .cateye {
+    display: block; width: var(--eye-w);
+    animation: blink 6.4s ease-in-out infinite;   /* the lid closes to a line */
+  }
+  .cateye svg { display: block; width: 100%; height: auto; overflow: visible; filter: var(--ink-filter); }
+  .cateye.l svg { transform: rotate(-8deg); }
+  .cateye.r svg { transform: rotate(8deg); }
+  .cateye path {
+    fill: none; stroke: var(--ink);
+    stroke-width: 5; stroke-linecap: round;
+  }
+  @keyframes blink {
+    0%, 91%, 100% { transform: scaleY(1); }
+    93.5%, 95.5%  { transform: scaleY(.075); }
+  }
+
+  /* ============================================================ CLOCK
+     Place it above the eyes, below them, or not at all - see CONFIG. */
+  .clock {
+    position: fixed; left: 50%; transform: translateX(-50%);
+    display: flex; align-items: baseline;
+    font-weight: 800;
+    font-size: var(--clock-size);
+    line-height: 1.02;
+    letter-spacing: .01em;
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum";
+    white-space: nowrap;
+    color: var(--text);
+    animation: fadeUp 1s var(--ease) .3s both;
+  }
+  .clock .ampm {
+    font-size: .42em; letter-spacing: .14em; margin-left: .18em;
+    opacity: .55; text-transform: uppercase;
+  }
+  /* The clock sits beside the eyes, and never past the edge of the screen: the
+     natural place is below (or above) the face, but with a large `size` that
+     place runs off the panel, so it is held against the edge instead. The clock
+     is 1.02 of its own font size tall - one line, and nothing else in it. */
+  body.clock-below .clock {
+    top: min(calc(50% + var(--eye-w) * .22 + var(--clock-gap)),
+             calc(100% - var(--clock-size) * 1.02 - var(--clock-gap)));
+  }
+  body.clock-above .clock {
+    bottom: min(calc(50% + var(--eye-w) * .22 + var(--clock-gap)),
+                calc(100% - var(--clock-size) * 1.02 - var(--clock-gap)));
+  }
+  body.clock-hidden .clock { display: none; }
+  @keyframes fadeUp {
+    from { opacity: 0; transform: translate(-50%, 16px); }
+    to   { opacity: 1; transform: translate(-50%, 0); }
+  }
+
+  /* ============================================================ FX */
+  .fx { position: fixed; inset: 0; pointer-events: none; overflow: hidden; z-index: 9; }
+  .bit {
+    position: absolute;
+    transform: translate(-50%, -50%);
+    font-size: var(--size, 20px);
+    animation: pop var(--dur, 1.5s) var(--ease) forwards;
+    will-change: transform, opacity;
+  }
+  @keyframes pop {
+    0%   { opacity: 0; transform: translate(-50%, -50%) scale(.3) rotate(0deg); }
+    18%  { opacity: 1; }
+    100% {
+      opacity: 0;
+      transform: translate(calc(-50% + var(--dx, 0px)), calc(-50% + var(--dy, -80px)))
+                 scale(var(--scale, 1.1)) rotate(var(--rot, 40deg));
+    }
+  }
+
+  /* ============================================================ A11Y */
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation: none !important; transition-duration: .01ms !important; }
+  }
+</style>
+</head>
+<body class="clock-below">
+
+  <div class="bg" aria-hidden="true">
+    <div class="layer-night" id="stars"></div>
+    <div class="layer-day" id="orbs"></div>
+  </div>
+
+  <main class="stage">
+    <div class="creature">
+      <div class="floater">
+        <div class="halo" aria-hidden="true"></div>
+
+        <div class="face" id="face">
+          <div class="head" id="head">
+            <div class="eyes" id="eyes">
+              <span class="cateye l">
+                <svg viewBox="0 0 48 17" aria-hidden="true"><path d="M4 13.4C12.5 2.4 35.5 2.4 44 13.4" /></svg>
+              </span>
+              <span class="cateye r">
+                <svg viewBox="0 0 48 17" aria-hidden="true"><path d="M4 13.4C12.5 2.4 35.5 2.4 44 13.4" /></svg>
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="clock" id="clock">
+      <span id="clockTime">--:--</span><span class="ampm" id="clockAmPm"></span>
+    </div>
+  </main>
+
+  <div class="fx" id="fx" aria-hidden="true"></div>
+
+<script>
+(function () {
+  "use strict";
+
+  /* ===========================================================
+     CONFIG  -  edit these, or override in the URL:
+     ?clock=above&theme=night&size=1.2&awake=0
+     ============================================================ */
+  var CONFIG = {
+    clock: "below",     // "below" | "above" | "hidden"
+    theme: "auto",      // "auto" (by clock time) | "night" | "day"
+    keepAwake: true,    // hold a screen wake lock so the panel never sleeps
+    size: 1             // eye size multiplier (make the eyes, and the clock, bigger)
+  };
+
+  (function applyParams() {
+    try {
+      var q = new URLSearchParams(window.location.search);
+      if (q.has("clock")) {
+        var c = q.get("clock").toLowerCase();
+        if (c === "above" || c === "below" || c === "hidden" || c === "none" || c === "off") {
+          CONFIG.clock = (c === "none" || c === "off") ? "hidden" : c;
+        }
+      }
+      if (q.has("theme")) {
+        var t = q.get("theme").toLowerCase();
+        if (t === "night" || t === "day" || t === "auto") CONFIG.theme = t;
+      }
+      if (q.has("awake")) CONFIG.keepAwake = q.get("awake") !== "0";
+      if (q.has("size")) {
+        var n = parseFloat(q.get("size"));
+        if (isFinite(n) && n > 0.2 && n < 4) CONFIG.size = n;
+      }
+    } catch (e) { /* no URL parsing available: defaults stand */ }
+
+    /* The fallback promise: unless a setup explicitly asked for something
+       else, the clock is ON and sits BELOW the eyes. Anything missing,
+       misspelled or nonsense lands back here. */
+    if (CONFIG.clock !== "above" && CONFIG.clock !== "hidden") CONFIG.clock = "below";
+    if (CONFIG.theme !== "night" && CONFIG.theme !== "day") CONFIG.theme = "auto";
+    var s = parseFloat(CONFIG.size);
+    CONFIG.size = (isFinite(s) && s > 0.2 && s < 4) ? s : 1;
+    CONFIG.keepAwake = CONFIG.keepAwake !== false;
+  })();
+
+  var doc     = document.documentElement;
+  var $       = function (s, r) { return (r || document).querySelector(s); };
+  var clamp   = function (v, a, b) { return Math.min(b, Math.max(a, v)); };
+  var reduce  = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  doc.style.setProperty("--eye-size", CONFIG.size);
+  // exactly one position class, whatever the default was
+  document.body.classList.remove("clock-below", "clock-above", "clock-hidden");
+  document.body.classList.add("clock-" + CONFIG.clock);
+
+  /* ========================================================== theme engine
+     night = 22:00 -> 06:00 (black background, white eyes)
+     day   = 06:00 -> 22:00 (white background, black eyes)      */
+  var NIGHT_FROM = 22, NIGHT_TO = 6;
+
+  function isNight(when) {
+    var h = (when || new Date()).getHours();
+    return h >= NIGHT_FROM || h < NIGHT_TO;
+  }
+
+  var themeNow = null;
+  var metaTheme = $("#metaTheme");
+
+  function applyTheme() {
+    var next = CONFIG.theme === "auto" ? (isNight() ? "night" : "day") : CONFIG.theme;
+    var flipped = next !== themeNow;
+    themeNow = next;
+    doc.classList.toggle("night", next === "night");
+    doc.classList.toggle("day",   next === "day");
+    metaTheme.setAttribute("content", next === "night" ? "#04050a" : "#ffffff");
+    if (flipped) {
+      var f = creatureRect();
+      burst(16, next === "night" ? ["\u2726", "\u2727", "\u2b50", "\u2665"] : ["\u2764", "\u273f", "\u2601", "\u2727"],
+            f.cx, f.cy, 220);
+    }
+  }
+
+  /* ========================================================== backdrop fx */
+  function buildBackdrop() {
+    var stars = $("#stars"), orbs = $("#orbs");
+    var i, el;
+    if (!reduce) {
+      var n = window.innerWidth * window.innerHeight > 1400000 ? 140 : 80;
+      for (i = 0; i < n; i++) {
+        el = document.createElement("span");
+        el.className = "star";
+        var size = (Math.random() * 2.2 + 1).toFixed(2);
+        el.style.cssText =
+          "left:" + (Math.random() * 100).toFixed(3) + "%;" +
+          "top:" + (Math.random() * 100).toFixed(3) + "%;" +
+          "width:" + size + "px;height:" + size + "px;" +
+          "--d:" + (2 + Math.random() * 4).toFixed(2) + "s;" +
+          "--delay:" + (Math.random() * 5).toFixed(2) + "s;";
+        stars.appendChild(el);
+      }
+    }
+    var o = window.innerWidth < 620 ? 8 : 14;
+    for (i = 0; i < o; i++) {
+      el = document.createElement("span");
+      el.className = "orb";
+      var w = (Math.random() * 90 + 34).toFixed(0);
+      el.style.cssText =
+        "left:" + (Math.random() * 96).toFixed(3) + "%;" +
+        "top:" + (Math.random() * 92).toFixed(3) + "%;" +
+        "width:" + w + "px;height:" + w + "px;" +
+        "--d:" + (16 + Math.random() * 16).toFixed(1) + "s;" +
+        "--delay:" + (-Math.random() * 20).toFixed(1) + "s;opacity:" + (0.25 + Math.random() * 0.35).toFixed(2);
+      orbs.appendChild(el);
+    }
+  }
+
+  /* ========================================================== shooting stars
+     Only at night, and only now and then: a streak falls out of the upper
+     right on a natural diagonal, then the sky is still again for a while. */
+  var shootTimer = null;
+
+  function spawnShootingStar() {
+    if (reduce || themeNow !== "night" || document.hidden) return;
+    var w = window.innerWidth, h = window.innerHeight;
+    var dx = -(0.32 + Math.random() * 0.34) * w;      // heading left
+    var dy = -dx * (0.38 + Math.random() * 0.34);     // ...and down: a meteoric slope
+    var len = clamp(w * (0.09 + Math.random() * 0.11), 70, 360);
+    var dur = 1.1 + Math.random() * 1.2;
+
+    var s = document.createElement("span");
+    s.className = "shoot";
+    s.style.cssText =
+      "left:" + (w * (0.40 + Math.random() * 0.64)).toFixed(1) + "px;" +
+      "top:" + (h * (Math.random() * 0.40 - 0.06)).toFixed(1) + "px;" +
+      "--dx:" + dx.toFixed(1) + "px;" +
+      "--dy:" + dy.toFixed(1) + "px;" +
+      "--angle:" + (Math.atan2(dy, dx) * 180 / Math.PI).toFixed(1) + "deg;" +
+      "--len:" + len.toFixed(0) + "px;" +
+      "--w:" + (1.4 + len * 0.009).toFixed(2) + "px;" +
+      "--dur:" + dur.toFixed(2) + "s;";
+    s.innerHTML = "<i></i>";
+    $("#stars").appendChild(s);
+    setTimeout(function () { s.remove(); }, dur * 1000 + 250);
+  }
+
+  function scheduleShootingStars() {
+    if (shootTimer) return;
+    shootTimer = setTimeout(function () {
+      shootTimer = null;
+      spawnShootingStar();
+      if (Math.random() < 0.2) {                       // now and then, two in a row
+        setTimeout(spawnShootingStar, 260 + Math.random() * 520);
+      }
+      scheduleShootingStars();
+    }, 14000 + Math.random() * 26000);                 // one every ~14-40s
+  }
+
+  /* ========================================================== particles */
+  var fx = $("#fx");
+  function burst(count, glyphs, x, y, spread) {
+    if (reduce) return;
+    count = count || 12;
+    spread = spread || 120;
+    var scale = clamp(creatureRect().w / 600, .55, 1.6);
+    for (var i = 0; i < count; i++) {
+      var b = document.createElement("span");
+      b.className = "bit";
+      b.textContent = glyphs[(Math.random() * glyphs.length) | 0];
+      var ang = Math.random() * Math.PI * 2;
+      var dist = spread * (0.35 + Math.random() * 0.65) * scale;
+      b.style.cssText =
+        "left:" + x + "px;top:" + y + "px;" +
+        "--dx:" + (Math.cos(ang) * dist).toFixed(1) + "px;" +
+        "--dy:" + (Math.sin(ang) * dist - 60 * scale).toFixed(1) + "px;" +
+        "--rot:" + ((Math.random() * 2 - 1) * 160).toFixed(0) + "deg;" +
+        "--scale:" + (0.8 + Math.random() * 0.9).toFixed(2) + ";" +
+        "--size:" + ((12 + Math.random() * 20) * scale).toFixed(0) + "px;" +
+        "--dur:" + (1.1 + Math.random() * 0.9).toFixed(2) + "s;";
+      fx.appendChild(b);
+      (function (el) { setTimeout(function () { el.remove(); }, 2300); })(b);
+    }
+  }
+
+  function creatureRect() {
+    var r = $(".creature").getBoundingClientRect();
+    return { cx: r.left + r.width / 2, cy: r.top + r.height / 2, w: r.width, h: r.height };
+  }
+
+  /* ========================================================== eyes that watch
+     The pair leans with you, perks up now and then, and the render loop
+     parks itself whenever the gaze has settled - a display running for
+     weeks should not be burning a frame callback at rest. */
+  var head = $("#head");
+  var eyesEl = $("#eyes");
+  var pointer = { x: 0, y: 0 };
+  var look = { x: 0, y: 0 };
+  var lastPointer = 0;
+  var rafId = null, wanderTimer = null, perkTimer = null, idleTimer = null;
+  var lastX = 1e9, lastY = 1e9;
+  var shiftX = 8, shiftY = 6;
+
+  function measureEyes() {
+    var r = eyesEl.getBoundingClientRect();
+    shiftX = (r.width / 2) * 0.10;
+    shiftY = r.height * 0.16;
+  }
+
+  function kick() {
+    if (rafId === null && !document.hidden) rafId = requestAnimationFrame(step);
+  }
+
+  function scheduleWander() {
+    if (wanderTimer) return;
+    wanderTimer = setTimeout(function () {
+      wanderTimer = null;
+      if (performance.now() - lastPointer > 3200) {
+        pointer.x = (Math.random() * 2 - 1) * 0.6;
+        pointer.y = (Math.random() * 2 - 1) * 0.4 + 0.12;   // drifts up: awake and curious
+      }
+      kick();
+    }, 2400 + Math.random() * 3200);
+  }
+
+  /* an occasional lift of the brows, so the wall is never quite dead */
+  function schedulePerk() {
+    if (perkTimer) return;
+    perkTimer = setTimeout(function () {
+      perkTimer = null;
+      eyesEl.classList.add("perk");
+      setTimeout(function () {
+        eyesEl.classList.remove("perk");
+        schedulePerk();
+      }, 620);
+    }, 9000 + Math.random() * 17000);
+  }
+
+  function step() {
+    rafId = null;
+    look.x += (pointer.x - look.x) * 0.085;
+    look.y += (pointer.y - look.y) * 0.085;
+
+    var sx = look.x * shiftX, sy = look.y * shiftY;
+    if (Math.abs(sx - lastX) > 0.05 || Math.abs(sy - lastY) > 0.05) {
+      head.style.transform =
+        "rotate(" + (look.x * 3.4).toFixed(2) + "deg) " +
+        "translate(" + (look.x * 6).toFixed(2) + "px," + (look.y * 5).toFixed(2) + "px)";
+      lastX = sx; lastY = sy;
+    }
+
+    if (Math.abs(pointer.x - look.x) < 0.004 && Math.abs(pointer.y - look.y) < 0.004) {
+      scheduleWander();          /* settled: stop asking for frames */
+    } else {
+      rafId = requestAnimationFrame(step);
+    }
+  }
+
+  function wake() {
+    document.body.classList.remove("idle");
+    clearTimeout(idleTimer);
+    idleTimer = setTimeout(function () { document.body.classList.add("idle"); }, 8000);
+  }
+
+  window.addEventListener("pointermove", function (e) {
+    lastPointer = performance.now();
+    pointer.x = clamp((e.clientX - window.innerWidth / 2) / (window.innerWidth / 2), -1, 1);
+    pointer.y = clamp((e.clientY - window.innerHeight / 2) / (window.innerHeight / 2), -1, 1);
+    wake();
+    kick();
+  });
+  window.addEventListener("pointerleave", function () { pointer.x = 0; pointer.y = 0; kick(); });
+  window.addEventListener("resize", measureEyes);
+  document.addEventListener("visibilitychange", function () { if (!document.hidden) kick(); });
+
+  /* ========================================================== the eyes react */
+  var face = $("#face");
+  var happyTimer = 0;
+
+  function cheer(ms) {
+    face.classList.add("happy");
+    clearTimeout(happyTimer);
+    happyTimer = setTimeout(function () { face.classList.remove("happy"); }, ms || 1200);
+  }
+
+  $(".creature").addEventListener("pointerdown", function (e) {
+    face.classList.remove("squish");
+    void face.offsetWidth;
+    face.classList.add("squish");
+    burst(12, themeNow === "night"
+      ? ["\u2726", "\u2727", "\u2b50", "\u2665", "\u{1FA77}"]
+      : ["\u2764", "\u273f", "\u2600\uFE0F", "\u2727", "\u{1F90D}"], e.clientX, e.clientY, 130);
+    cheer(700);
+  });
+
+  /* ========================================================== keep the panel awake */
+  var sentinel = null;
+  function syncAwake() {
+    if (!CONFIG.keepAwake || !("wakeLock" in navigator)) return;
+    if (sentinel || document.hidden) return;
+    try {
+      navigator.wakeLock.request("screen").then(function (s) {
+        sentinel = s;
+        s.addEventListener("release", function () { sentinel = null; });
+      }).catch(function () { /* browser said no - fine */ });
+    } catch (e) { /* older browsers */ }
+  }
+
+  /* ========================================================== the clock */
+  var clockTime = $("#clockTime"), clockAmPm = $("#clockAmPm");
+
+  function tickClock() {
+    var now = new Date();
+    var parts = now.toLocaleTimeString([], { hour: "numeric", minute: "2-digit", hour12: true }).split(" ");
+    var text = parts[0];
+    if (clockTime.textContent !== text) clockTime.textContent = text;
+    var ampm = (parts[1] || "").toUpperCase();
+    if (clockAmPm.textContent !== ampm) clockAmPm.textContent = ampm;
+    if (document.title !== text + " " + ampm) document.title = (text + " " + ampm).trim();
+    applyTheme();   // flips the moment the clock crosses 06:00 / 22:00
+  }
+  setInterval(tickClock, 1000);
+
+  /* ========================================================== go */
+  buildBackdrop();
+  syncAwake();
+  wake();
+  schedulePerk();
+  scheduleShootingStars();
+  tickClock();
+  applyTheme();
+  measureEyes();
+  kick();
+
+  document.addEventListener("visibilitychange", function () { if (!document.hidden) syncAwake(); });
+
+  // seam for testing / tinkering from the console
+  window.__display = {
+    CONFIG: CONFIG, isNight: isNight, applyTheme: applyTheme, wake: wake,
+    clockText: function () { return clockTime.textContent + clockAmPm.textContent; },
+    spawnStar: spawnShootingStar,
+    theme: function () { return themeNow; }
+  };
+})();
+</script>
+</body>
+</html>
