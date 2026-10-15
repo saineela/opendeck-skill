@@ -634,7 +634,10 @@
       // queued. The console reads the playlist and appends the tail in one call.
       const playlistId = listedPlaylist();
       if (playlistId && track.video_id) {
-        const rangeButton = element("button", "music-queue-add music-queue-range");
+        // Its own class, not a second "add" one: a row must offer exactly one
+        // add-to-queue control, and this is a different action (the tail below
+        // the song). The shape is shared in CSS so both still read as siblings.
+        const rangeButton = element("button", "music-queue-range");
         rangeButton.type = "button";
         rangeButton.textContent = "↓";
         rangeButton.title = "Add this song and every song under it to the queue";

@@ -648,9 +648,12 @@ body.dark .music-app .music-error { border-color: #70494a; background: #392628; 
 .music-app .music-row-wrap { display: flex; align-items: center; gap: 4px; border-bottom: 1px solid var(--m-line); }
 .music-app .music-row-wrap:last-child { border-bottom-color: transparent; }
 .music-app .music-row-wrap .music-row { flex: 1 1 auto; min-width: 0; border-bottom-color: transparent; }
-.music-app .music-queue-add { flex: none; display: grid; place-items: center; width: 38px; height: 38px; border: 1px solid var(--m-line); border-radius: 999px; background: var(--m-alt); color: var(--m-ink); font-size: 16px; font-weight: 700; line-height: 1; cursor: pointer; transition: background-color .15s, border-color .15s, transform .12s; }
-.music-app .music-queue-add:hover { border-color: var(--m-accent); background: var(--m-accent-soft); }
-.music-app .music-queue-add:active { transform: scale(.92); }
+.music-app .music-queue-add,
+.music-app .music-queue-range { flex: none; display: grid; place-items: center; width: 38px; height: 38px; border: 1px solid var(--m-line); border-radius: 999px; background: var(--m-alt); color: var(--m-ink); font-size: 16px; font-weight: 700; line-height: 1; cursor: pointer; transition: background-color .15s, border-color .15s, transform .12s; }
+.music-app .music-queue-add:hover,
+.music-app .music-queue-range:hover { border-color: var(--m-accent); background: var(--m-accent-soft); }
+.music-app .music-queue-add:active,
+.music-app .music-queue-range:active { transform: scale(.92); }
 /* "This song and every song under it": the plus with a downward arrow, so the
    two controls beside a row never read as the same button. */
 .music-app .music-queue-range { font-size: 15px; color: var(--m-muted); }
