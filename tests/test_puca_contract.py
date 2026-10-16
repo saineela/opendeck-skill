@@ -81,6 +81,51 @@ def style_selectors(css: str) -> list[str]:
     return [selector for selector in selectors if selector]
 
 
+def style_declarations(css: str, selector: str) -> str:
+    """Everything a stylesheet declares for one exact selector.
+
+    Every rule with that selector, top level only, joined together — the union of
+    what an element matching it is told, so a test can ask what the page actually
+    gets rather than whether a fragment appears anywhere in the file. A selector
+    that is not there comes back empty, so a missing rule fails the assertion
+    that wanted it instead of passing on an unrelated match.
+    """
+    text = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+    declarations: list[str] = []
+    prelude = ""
+    stack: list[str] = []
+    index = 0
+    while index < len(text):
+        character = text[index]
+        if character == "{":
+            block = prelude.strip()
+            prelude = ""
+            if not stack and block == selector:
+                depth = 1
+                start = index + 1
+                index += 1
+                while index < len(text) and depth:
+                    if text[index] == "{":
+                        depth += 1
+                    elif text[index] == "}":
+                        depth -= 1
+                    index += 1
+                declarations.append(text[start:index - 1])
+                continue
+            stack.append(block)
+        elif character == "}":
+            if not stack:
+                raise AssertionError("stylesheet has an unmatched closing brace")
+            stack.pop()
+            prelude = ""
+        elif character == ";" and not stack:
+            prelude = ""
+        else:
+            prelude += character
+        index += 1
+    return "\n".join(declarations)
+
+
 @unittest.skipUnless(os.path.isdir(NIX_CORE), "NIX PUCA core is not available")
 class PucaContractTestCase(unittest.TestCase):
     @classmethod
@@ -327,6 +372,29 @@ class PucaContractTestCase(unittest.TestCase):
         self.assertIn(".music-app .grid { grid-template-columns: minmax(0, 1fr); }", styles)
         self.assertIn(".music-app .side {\n    position: static; max-height: none;", styles)
         self.assertIn("animation: none !important;", styles)
+
+    def test_music_page_paints_its_own_surface(self):
+        """The page's root paints the panel's surface: the dashboard owns the document.
+
+        On the wall the palette's background comes from `body` in
+        PUCA-Panel/panel.css. The page cannot use that rule — the console's
+        dashboard owns the document here, so this design is scoped to
+        `.music-app` — and a theme that sets a foreground without a surface
+        paints white words on the dashboard's white page: with the night page's
+        text measuring 1:1 against what was actually behind it, the page is not
+        merely unstyled, it is blank. So the root paints the surface itself,
+        with the panel's own wash, padding and corner.
+        """
+        with open(os.path.join(SKILL_DIR, "ui", "music.css"), encoding="utf-8") as handle:
+            styles = handle.read()
+
+        surface = style_declarations(styles, ".music-app")
+        self.assertIn("background-color: var(--bg)", surface,
+                      "the page root paints the theme's own background")
+        self.assertIn("radial-gradient", surface, "the panel's wash goes over it")
+        self.assertIn("color: var(--text)", surface, "and its foreground is the theme's")
+        self.assertIn("padding: var(--pad)", surface, "inside the panel's own frame")
+        self.assertIn("border-radius: var(--radius)", surface)
 
     def test_music_page_answers_a_tap_without_waiting_for_the_speaker(self):
         """Typing, tapping and volume changes must feel instant.

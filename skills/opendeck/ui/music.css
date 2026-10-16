@@ -76,6 +76,26 @@
   --shadow: 0 20px 50px rgba(0, 0, 0, .14);
 }
 
+/* ------------------------------------------------------------ the surface */
+/* On the wall the panel's palette is painted by its own document — `body` in
+   PUCA-Panel/panel.css, which this page cannot use, because the console's
+   dashboard owns the document here and the design is scoped to this root. So
+   the root paints the surface itself: without it the theme's foreground lands
+   on the dashboard's white page — white text on white, which is what a night
+   page looks like when nobody paints the dark behind it. The wash, the padding
+   and the corner are the panel's own (`body` and `--pad`/`--radius` there), so
+   the design reads exactly as it does on the wall, as a panel inside the page. */
+.music-app {
+  background-color: var(--bg);
+  background-image:
+    radial-gradient(1200px 700px at 12% -10%, color-mix(in oklab, var(--ink) 8%, transparent), transparent 70%),
+    radial-gradient(900px 600px at 100% 0%, color-mix(in oklab, var(--ink) 4%, transparent), transparent 65%);
+  padding: var(--pad);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+
 /* ---------------------------------------------------------------- base */
 .music-app, .music-app *, .music-app *::before, .music-app *::after { box-sizing: border-box; }
 .music-app p, .music-app h1, .music-app h2, .music-app h3, .music-app ol, .music-app li { margin: 0; }
