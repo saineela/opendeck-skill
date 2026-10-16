@@ -996,3 +996,160 @@ body.muted .volumerow button.vol .ic-muted { display: block; }
   background: var(--bg);
 }
 body.saving { cursor: none; }
+
+/* ============================================================= FLOATING BAR
+   The player's card folds away as the column scrolls and the results sheet
+   covers the whole wall, so what is playing gets a strip of its own: the
+   track's name, where we are in it, and the three controls worth having from
+   across a room. Collapsed it is a small pill at the bottom of the wall; it
+   opens upward when the cursor reaches it (or the keyboard focuses it), and it
+   is hidden entirely while the card itself is on screen — two players showing
+   the same song is one too many. */
+.minibar {
+  position: fixed;
+  z-index: 55;
+  left: 50%;
+  bottom: clamp(10px, 1.4vh, 24px);
+  display: flex;
+  width: min(560px, calc(100vw - 2 * var(--gap)));
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 13px 12px;
+  transform: translateX(-50%);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-s);
+  background: color-mix(in oklab, var(--bg-2) 82%, transparent);
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(14px);
+  transition: border-color .2s var(--ease), background .2s var(--ease);
+}
+.minibar:hover,
+.minibar:focus-within {
+  border-color: color-mix(in oklab, var(--accent) 38%, var(--line));
+  background: color-mix(in oklab, var(--bg-2) 92%, transparent);
+}
+
+/* The transport is revealed rather than appended: a strip that grew a row when
+   the cursor arrived would move the thing the cursor was aiming at. */
+.minibar-panel {
+  display: flex;
+  justify-content: center;
+  gap: 6px;
+  max-height: 0;
+  opacity: 0;
+  overflow: hidden;
+  transition: max-height .22s var(--ease), opacity .18s var(--ease), margin .22s var(--ease);
+}
+.minibar:hover .minibar-panel,
+.minibar:focus-within .minibar-panel {
+  max-height: 58px;
+  opacity: 1;
+  margin-bottom: 4px;
+}
+
+.minibar-btn {
+  display: grid;
+  place-items: center;
+  width: clamp(38px, 3.2vw, 52px);
+  height: clamp(38px, 3.2vw, 52px);
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  color: var(--text);
+  background: var(--panel);
+  transition: background .18s var(--ease), border-color .18s var(--ease), transform .18s var(--bounce);
+}
+.minibar-btn:hover {
+  border-color: var(--accent);
+  background: var(--panel-2);
+  transform: translateY(-1px);
+}
+.minibar-btn svg { width: 44%; height: 44%; }
+.minibar-btn.play {
+  color: var(--accent-ink);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.minibar .ic-pause { display: none; }
+.minibar.playing .ic-play { display: none; }
+.minibar.playing .ic-pause { display: block; }
+
+.minibar-strip {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: clamp(8px, .9vw, 14px);
+  padding: 4px 6px;
+  border: 0;
+  border-radius: calc(var(--radius-s) - 6px);
+  color: inherit;
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.minibar-strip:hover { background: var(--panel); }
+
+.minibar-art {
+  display: grid;
+  flex: 0 0 clamp(34px, 3vw, 48px);
+  place-items: center;
+  width: clamp(34px, 3vw, 48px);
+  height: clamp(34px, 3vw, 48px);
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-s);
+  color: var(--muted);
+  background: var(--panel);
+  font-size: clamp(14px, 1.2vw, 20px);
+}
+.minibar-art img { width: 100%; height: 100%; object-fit: cover; }
+
+.minibar-copy {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+}
+.minibar-title {
+  overflow: hidden;
+  color: var(--text);
+  font-size: clamp(12px, 1.02vw, 17px);
+  font-weight: 650;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.minibar-artist {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: clamp(10px, .82vw, 14px);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.minibar-times {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: clamp(10px, .82vw, 14px);
+  font-variant-numeric: tabular-nums;
+}
+
+.minibar-progress {
+  position: absolute;
+  right: 14px;
+  bottom: 5px;
+  left: 14px;
+  height: 2px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: var(--line);
+}
+.minibar-progress i {
+  display: block;
+  width: 0;
+  height: 100%;
+  background: var(--accent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .minibar, .minibar-panel, .minibar-btn { transition: none; }
+}

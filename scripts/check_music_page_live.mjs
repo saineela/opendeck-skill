@@ -2,10 +2,12 @@
  *
  * Loads the real shell (/static/music-page.js) and the installed skill's real
  * page script into jsdom, bridges window.fetch to the running console, and
- * drives the page the way a user does: open it, switch tabs, type a search,
- * repeat the search, and (with NIX_MUSIC_LIVE_PLAY=1) tap a track through the
- * speaker handoff. It prints the measured time of every request so the page's
- * latency claims can be checked against the real server.
+ * drives the page the way a user does: open it, wait for the shelves to read
+ * OpenDeck, open a playlist, type a search, repeat the search, work the
+ * transport, write shuffle/repeat, line tracks up in the queue and drag one, and
+ * (with NIX_MUSIC_LIVE_PLAY=1) tap a track through the speaker handoff. It
+ * prints the measured time of every request so the page's latency claims can be
+ * checked against the real server.
  *
  * Usage:
  *   NIX_CONSOLE_URL=http://127.0.0.1:49117 node scripts/check_music_page_live.mjs
@@ -127,6 +129,10 @@ window.fetch = async function bridge(input, init) {
   }
   counts.set(url.pathname, (counts.get(url.pathname) || 0) + 1);
   requested.push(url.pathname + url.search);
+  if (url.pathname === "/api/music/search" && searchStateOnTheWire === null) {
+    const title = window.document.querySelector(".music-sheet-title");
+    searchStateOnTheWire = title ? title.textContent : "";
+  }
   return timed(url.pathname + url.search, url.toString(), options);
 };
 
@@ -143,28 +149,55 @@ await window.loadMusicPage();
 await wait(600);
 
 const root = window.document.getElementById("musicShell");
-const rows = () => [...root.querySelectorAll(".music-row")];
-// The browse list's note, not the queue's: both are .music-empty, and the queue
-// card comes first in the document.
-const browseNote = () => root.querySelector(".music-search").closest(".music-card").querySelector(".music-empty");
+// While a search is on the wire the page has to say so, and the answer can land
+// in milliseconds against a warm console, so the state is read at the moment the
+// request leaves rather than by racing the reply afterwards.
+let searchStateOnTheWire = null;
+// The page is the PUCA Panel's design, so its parts are the panel's: shelves of
+// sleeves, a results sheet, the hero card, and "Up next" beside them.
+const tiles = () => [...root.querySelectorAll(".music-shelves .music-tile")];
+const shelfTiles = (kind) => [...root.querySelectorAll(`.shelf[data-shelf="${kind}"] .music-tile`)];
+const sheet = root.querySelector(".music-sheet");
+const sheetRows = () => [...sheet.querySelectorAll(".music-resline")];
+const sheetTitle = () => sheet.querySelector(".music-sheet-title").textContent;
+// What the sheet is holding *now*: a closed sheet keeps the last list it drew,
+// and a search replaces it only once its own answer lands, so a row count has to
+// be read from an open sheet that is showing a search's result.
+const searchRows = () => (!sheet.hidden && /Results for|Searching OpenDeck/.test(sheetTitle()) ? sheetRows() : []);
+const shelfNote = (kind) => root.querySelector(`.shelf[data-shelf="${kind}"] .music-shelf-note`).textContent;
 const opened = await fetch(BASE + "/api/music/now-playing").then((r) => r.json()).catch(() => null);
 check("the page mounts into the console shell", Boolean(root.querySelector(".music-app")));
+check("the page is the panel's shape", Boolean(root.querySelector(".music-app .top .searchbar"))
+  && Boolean(root.querySelector(".music-app .grid .left .hero"))
+  && Boolean(root.querySelector(".music-app .grid > .side.music-queue-card"))
+  && Boolean(root.querySelector(".music-app .left > .shelves")),
+  "a searchbar, a hero, shelves and Up next are the panel's arrangement");
 check("the page finds the speaker and current track",
   Boolean(root.querySelector(".music-badge")) && root.querySelector(".music-now-title").textContent.length > 0,
   root.querySelector(".music-now-title") && root.querySelector(".music-now-title").textContent);
-// The library is a real OpenDeck round trip (seconds against a live speaker),
-// so the page is polled instead of assumed loaded.
-const libraryDeadline = Date.now() + 25000;
-while (rows().length === 0 && Date.now() < libraryDeadline) await wait(250);
-check("the library tab renders real rows from OpenDeck", rows().length > 0, rows().length + " rows");
+
+// The shelves are real OpenDeck round trips (seconds against a live speaker), and
+// jsdom has no IntersectionObserver, so the page reads them at load: the check
+// polls for sleeves rather than assuming a moment.
+const shelfDeadline = Date.now() + 30000;
+while (tiles().length === 0 && Date.now() < shelfDeadline) await wait(250);
+check("the shelves paint real sleeves from OpenDeck", tiles().length > 0,
+  `${tiles().length} sleeves; playlists="${shelfNote("playlists")}" likes="${shelfNote("likes")}" history="${shelfNote("history")}"`);
 // The skill runtime refuses an argument format it does not declare instead of
 // clamping it, so a limit above the declared maximum yields an empty library.
-const declaredLimits = requested
+// Search is declared at 12 and the library reads at 500 (one shelf is a rail of
+// 20; a playlist opened from it is read whole).
+const limitsFor = (route) => requested
+  .filter((entry) => entry.startsWith(route))
   .map((entry) => /[?&]limit=(\d+)/.exec(entry))
   .filter(Boolean)
   .map((match) => Number(match[1]));
-check("every request stays inside the declared limit", declaredLimits.every((limit) => limit <= 12),
-  JSON.stringify(declaredLimits));
+const searchLimits = limitsFor("/api/music/search");
+const libraryLimits = limitsFor("/api/music/library");
+check("every search stays inside the declared limit",
+  searchLimits.every((limit) => limit <= 12), JSON.stringify(searchLimits));
+check("every library read stays inside the declared limit",
+  libraryLimits.every((limit) => limit <= 500), JSON.stringify(libraryLimits));
 // The shell states what the handoff control can do, from the same capabilities
 // this run just read. A speaker skill that declares working controls has to read
 // "Player control ready"; with no speaker skill installed the shell must say so
@@ -185,21 +218,34 @@ check("the header states the handoff play control's real state",
   `state="${sourceState}" player=${JSON.stringify(player)}`);
 check("the shell mirrors the spoken snapshot", Boolean(opened && opened.ok), JSON.stringify(opened && opened.error));
 
-// Switch tabs: real liked/history data straight from OpenDeck. Tabs are another
-// live round trip, so the harness waits for track rows (a playlist row carries
-// no video id) rather than for a fixed moment - a stale row from the previous
-// tab must not be able to satisfy the check.
-const tabs = [...root.querySelectorAll(".music-tabs button")];
-const liked = tabs.find((button) => button.textContent === "Liked");
-const hasTrackRows = () => rows().length > 0 && rows().some((row) => row.dataset.videoId);
-liked.click();
-const likedDeadline = Date.now() + 25000;
-while (!hasTrackRows() && Date.now() < likedDeadline) await wait(150);
-check("switching to Liked loads rows", hasTrackRows() || browseNote().textContent.includes("Nothing"),
-  browseNote().textContent);
+// ── a playlist opens from its sleeve ──────────────────────────────────────
+// The sleeves are the account's own OpenDeck playlists, and the sheet is where a
+// list is read at the size of the glass. A live playlist read is seconds, so the
+// rows are polled for; the sheet has to be titled with the playlist's own name.
+const firstPlaylist = shelfTiles("playlists")[0];
+if (firstPlaylist) {
+  const playlistName = firstPlaylist.querySelector(".music-tile-name").textContent;
+  firstPlaylist.click();
+  const playlistDeadline = Date.now() + 30000;
+  while (sheetRows().length === 0 && Date.now() < playlistDeadline) await wait(250);
+  check("a playlist opens as a list of its own songs",
+    sheetRows().length > 0 && sheetTitle().includes(playlistName.slice(0, 10)),
+    `title="${sheetTitle()}" rows=${sheetRows().length}`);
+  // Every listed song can be lined up without playing it: one add control per
+  // row, as a sibling of the row's own button.
+  check("a listed song offers its own queue control",
+    sheetRows().every((row) => Boolean(row.querySelector(".music-queue-add"))),
+    sheetRows().map((row) => row.querySelector(".music-queue-add") ? "add" : "none").join(" | "));
+  const closeButton = root.querySelector(".music-sheet-close");
+  check("the sheet can be closed", Boolean(closeButton));
+  if (closeButton) closeButton.click();
+  await wait(200);
+} else {
+  check("a playlist sleeve is listed on the Playlists shelf", false, shelfNote("playlists"));
+}
 
-// Search: debounced, then cached on the repeat.
-const input = root.querySelector("input[type=search]");
+// ── search: debounced, then cached on the repeat ──────────────────────────
+const input = root.querySelector('input[type="search"]');
 const searchesBefore = counts.get("/api/music/search") || 0;
 for (const value of ["d", "da", "daf", "daft punk"]) {
   input.value = value;
@@ -207,59 +253,61 @@ for (const value of ["d", "da", "daf", "daft punk"]) {
   await wait(60);
 }
 // A real OpenDeck search is a round trip out to the speaker's YouTube session
-// (seconds, not milliseconds), so the page is polled for its own signals - the
-// note it shows while searching, then its disappearance - instead of assuming
-// the results inside a fixed wait.
-let searchDeadline = Date.now() + 10000;
-while (!/Searching OpenDeck/.test(browseNote().textContent) && Date.now() < searchDeadline) await wait(50);
-searchDeadline = Date.now() + 30000;
-while (!(browseNote().hidden && rows().length > 0) && Date.now() < searchDeadline) await wait(100);
+// (seconds, not milliseconds), so the page is polled for the results rather than
+// assuming them inside a fixed wait; whether it announced the wait is read from
+// the title at the moment the request left (see the fetch bridge).
+let searchDeadline = Date.now() + 30000;
+while (!(searchRows().length > 0 && /Results for/.test(sheetTitle())) && Date.now() < searchDeadline) await wait(100);
 const searchesAfter = counts.get("/api/music/search") || 0;
-const found = rows();
-check("typing searches once and renders real results", searchesAfter - searchesBefore === 1 && found.length > 0,
-  `searches=${searchesAfter - searchesBefore} rows=${found.length}`);
-check("the results replace the searching note",
-  browseNote().hidden && browseNote().textContent.length === 0,
-  browseNote().textContent);
-check("the page never asked for more rows than the manifest declares",
-  requested.filter((entry) => entry.startsWith("/api/music/search")).every((entry) => (/([?&]limit=(\d+))/.exec(entry) || [0, 0, 0])[2] <= 12),
-  JSON.stringify(requested.filter((entry) => entry.startsWith("/api/music/search"))));
+check("typing searches once and renders real results",
+  searchesAfter - searchesBefore === 1 && searchRows().length > 0,
+  `searches=${searchesAfter - searchesBefore} rows=${searchRows().length} title="${sheetTitle()}"`);
+check("the page says it is searching while the search is on the wire",
+  /Searching OpenDeck/.test(searchStateOnTheWire || ""),
+  `title on the wire="${searchStateOnTheWire}"`);
+check("the results replace the searching state",
+  /Results for “daft punk”/.test(sheetTitle()) && !sheet.querySelector(".music-skeleton"),
+  sheetTitle());
 
-const rowsBeforeRepeat = rows().length;
+const rowsBeforeRepeat = searchRows().length;
 input.value = "daft punk";
 input.dispatchEvent(new window.Event("input"));
-await wait(600);
+await wait(800);
 check("repeating the search is served from cache",
-  (counts.get("/api/music/search") || 0) === searchesAfter && rows().length === rowsBeforeRepeat,
-  `searches=${counts.get("/api/music/search")} rows=${rowsBeforeRepeat}->${rows().length}`);
+  (counts.get("/api/music/search") || 0) === searchesAfter && searchRows().length === rowsBeforeRepeat,
+  `searches=${counts.get("/api/music/search")} rows=${rowsBeforeRepeat}->${searchRows().length}`);
 
 // ── transport and volume, against the real shell ───────────────────────────
-const transport = [...root.querySelectorAll(".music-controls button")];
-check("the transport is one toggle plus mute", transport.length === 2,
-  transport.map((button) => button.textContent).join(" | "));
-// The single toggle relabels itself "Pause" while something is playing, so the
-// check counts play/pause-named controls instead of banning the word: exactly
-// the one toggle, and never a separate stop. (Matching the label itself flagged
-// the toggle it had just counted as the transport.)
+// One transport: the play/pause toggle, and the speaker's own mute control. The
+// panel's control row is shuffle - previous - play/pause - next - repeat, and
+// nothing else: a second pause repeated the toggle and a stop only ever meant
+// "pause a moment".
+const controls = [...root.querySelectorAll(".music-controls button")];
+const playControls = controls.filter((button) => button.classList.contains("music-play"));
+check("the transport is one play/pause control", playControls.length === 1,
+  controls.map((button) => button.textContent).join(" | "));
 check("no separate pause or stop control exists",
-  transport.filter((button) => /play|pause/i.test(button.textContent)).length === 1
-    && !transport.some((button) => /\bstop\b/i.test(button.textContent)),
-  transport.map((button) => button.textContent).join(" | "));
+  !controls.some((button) => /^\s*(pause|stop)\s*$/i.test(button.textContent)),
+  controls.map((button) => button.textContent).join(" | "));
+const mute = root.querySelector(".music-mute");
+check("the page offers the speaker's own mute control", Boolean(mute), mute ? mute.getAttribute("aria-label") : "no mute control");
 const dial = root.querySelector('.music-volwheel[role="slider"]');
-check("the volume control is the graphical dial, not a range input",
+check("the volume control is the graphical slider, not a range input",
   Boolean(dial) && !root.querySelector('input[type="range"]'),
-  dial ? `aria-valuenow=${dial.getAttribute("aria-valuenow")} value=${root.querySelector(".music-volnum").textContent}` : "no dial");
-check("the dial shows the speaker's live level",
-  Boolean(dial) && /^\d+%$/.test(root.querySelector(".music-volnum").textContent),
+  dial ? `aria-valuenow=${dial.getAttribute("aria-valuenow")} value=${root.querySelector(".music-volnum").textContent}` : "no slider");
+check("the slider shows the speaker's live level",
+  Boolean(dial) && /^(\d+%|Muted)$/.test(root.querySelector(".music-volnum").textContent),
   root.querySelector(".music-volnum").textContent);
 
 // ── shuffle, repeat, like and playlist ────────────────────────────────────
 // Shuffle and repeat are real queue writes, so they are driven and read back.
-const extras = [...root.querySelectorAll(".music-extra")];
-check("the page offers shuffle, repeat, like and playlist controls", extras.length === 4,
-  extras.map((button) => button.textContent).join(" | "));
 const shuffleButton = root.querySelector('.music-extra[data-control="shuffle"]');
 const repeatButton = root.querySelector('.music-extra[data-control="repeat"]');
+const likeButton = root.querySelector('.music-extra[data-control="like"]');
+const playlistButton = root.querySelector('.music-extra[data-control="playlist"]');
+check("the page offers shuffle, repeat, like and playlist controls",
+  Boolean(shuffleButton && repeatButton && likeButton && playlistButton),
+  [shuffleButton, repeatButton, likeButton, playlistButton].map((button) => button && button.textContent).join(" | "));
 const readQueueMode = () => fetch(BASE + "/api/music/queue").then((r) => r.json());
 const modeBefore = await readQueueMode();
 shuffleButton.click();
@@ -277,9 +325,10 @@ check("shuffle turns back off", (await readQueueMode()).shuffle === modeBefore.s
 /* Repeat is a real queue write too, and this console may already be in any of
    the three modes, so the cycle is checked against the mode that was actually
    found rather than assuming a fresh "off" - the same way the shuffle presses
-   above compare with `modeBefore`. The page's cycle is off -> all -> one -> off. */
+   above compare with `modeBefore`. The page's cycle is off -> all -> one -> off,
+   and its labels are the panel's own. */
 const REPEAT_NEXT = { off: "all", all: "one", one: "off" };
-const repeatLabels = { off: "Repeat off", all: "Repeat all", one: "Repeat one" };
+const repeatLabels = { off: "Repeat", all: "Repeat all", one: "Repeat one" };
 const firstRepeat = repeatLabels[modeBefore.repeat] ? modeBefore.repeat : "off";
 const expectedRepeat = [firstRepeat, REPEAT_NEXT[firstRepeat], REPEAT_NEXT[REPEAT_NEXT[firstRepeat]]];
 const repeatSteps = [
@@ -299,48 +348,89 @@ for (const [name, expected] of repeatSteps) {
 // Liking and adding to a playlist write to the user's own account, so the live
 // check verifies the controls and the playlists they read and leaves the writes
 // to tests/music_page_dom.mjs, which drives the same page against a fake.
-const likeButton = root.querySelector('.music-extra[data-control="like"]');
 check("the like button follows whether a track is playing",
   likeButton.disabled === !(opened && opened.track),
   `disabled=${likeButton.disabled} track=${opened && opened.track && opened.track.title}`);
-const playlistButton = root.querySelector('.music-extra[data-control="playlist"]');
 playlistButton.click();
-const pickerDeadline = Date.now() + 10000;
+const pickerDeadline = Date.now() + 15000;
 while (!root.querySelector(".music-picker-row") && Date.now() < pickerDeadline) await wait(250);
 const pickerRows = [...root.querySelectorAll(".music-picker-row")];
 check("the playlist picker lists the account's own playlists", pickerRows.length > 0,
-  root.querySelector(".music-picker .music-empty").textContent);
+  root.querySelector(".music-picker .music-empty")
+    ? root.querySelector(".music-picker .music-empty").textContent
+    : "no note");
 check("Liked Music is not offered as a playlist to add to",
-  !pickerRows.some((row) => /^Liked Music$/i.test(row.querySelector("strong").textContent)),
-  pickerRows.map((row) => row.querySelector("strong").textContent).join(" | "));
+  !pickerRows.some((row) => /^Liked Music$/i.test(row.querySelector(".music-picker-name").textContent)),
+  pickerRows.map((row) => row.querySelector(".music-picker-name").textContent).join(" | "));
 playlistButton.click();
+await wait(200);
 
 // ── queue ─────────────────────────────────────────────────────────────────
-// Queueing is its own action: the big toggle is the whole transport, and lining
+// Queueing is its own action: the big control is the whole transport, and lining
 // a track up must not interrupt what is playing.
 const queueRows = () => [...root.querySelectorAll(".music-queue-row")];
-const queueAdds = [...root.querySelectorAll(".music-queue-add")];
-check("every track row offers a queue control", queueAdds.length === rows().length && queueAdds.length > 0,
-  `${queueAdds.length} add controls for ${rows().length} rows`);
+const queueAdds = [...root.querySelectorAll(".music-shelves .music-queue-add")];
+check("every sleeve offers a queue control",
+  queueAdds.length > 0 && queueAdds.length === tiles().filter((tile) => !tile.classList.contains("music-playlist-tile")).length,
+  `${queueAdds.length} add controls for ${tiles().length} sleeves`);
 const playsBeforeQueue = counts.get("/api/music/play") || 0;
-const queuedTitle = rows()[0].querySelector("strong").textContent;
-queueAdds[0].click();
-if (queueAdds[1]) queueAdds[1].click();
-await wait(1500);
-let queued = await fetch(BASE + "/api/music/queue").then((r) => r.json()).catch(() => null);
-check("the console accepted the queued tracks", Boolean(queued && queued.ok) && queued.count >= 1,
-  JSON.stringify(queued && { count: queued.count, message: queued.message, error: queued.error }));
-check("the queue card lists what was lined up", queueRows().length === queued.count,
-  `card=${queueRows().length} api=${queued.count}`);
+// Start from an empty queue: what is measured below is the card agreeing with the
+// provider, not what an earlier run happened to leave behind.
+await fetch(BASE + "/api/music/queue", {
+  method: "POST", headers: { "content-type": "application/json" },
+  body: JSON.stringify({ action: "clear" }),
+});
+// The card is the page's copy of a queue that lives in the provider, so the two
+// are polled to agreement rather than compared once: the page re-reads the queue
+// on its own timer, and a write's own reply paints it at least as fast.
+const readQueue = () => fetch(BASE + "/api/music/queue").then((r) => r.json()).catch(() => null);
+const settledQueue = async (expected, ms = 12000) => {
+  const deadline = Date.now() + ms;
+  let api = null;
+  while (Date.now() < deadline) {
+    api = await readQueue();
+    if (api && api.count === expected && queueRows().length === expected) return api;
+    await wait(250);
+  }
+  return api;
+};
+let queued = await settledQueue(0, 6000);
+check("the queue starts and empties together", Boolean(queued) && queued.count === 0 && queueRows().length === 0,
+  `card=${queueRows().length} api=${queued && queued.count}`);
+// Line up two tracks from two different shelves: a shelf can list the same track
+// twice, and one entry is not a queue to reorder. The add control rides a
+// track's sleeve, so the name that was lined up is the sleeve that owns it -
+// not the first sleeve on the page, which is a playlist and cannot be queued.
+const addFor = (kind) => root.querySelector(`.shelf[data-shelf="${kind}"] .music-queue-add`);
+const titleOf = (control) => control.closest(".music-tile-wrap").querySelector(".music-tile-name").textContent;
+const firstAdd = addFor("likes") || addFor("history") || queueAdds[0];
+const queuedTitle = titleOf(firstAdd);
+firstAdd.click();
+queued = await settledQueue(1);
+check("a queued sleeve reaches the provider and the card together",
+  Boolean(queued) && queued.count === 1 && queueRows().length === 1,
+  JSON.stringify(queued && { count: queued.count, message: queued.message, error: queued.error }) + ` card=${queueRows().length}`);
 check("the queue card names the queued track",
   queueRows().some((row) => row.textContent.includes(queuedTitle.slice(0, 12))), queuedTitle);
 check("queueing never starts playback by itself", (counts.get("/api/music/play") || 0) === playsBeforeQueue,
   `play calls=${counts.get("/api/music/play")} before=${playsBeforeQueue}`);
+// A second, different track: two entries are what a reorder needs, and the same
+// track twice would make the drag assertion say nothing.
+const secondAdd = [addFor("history"), addFor("likes")].find((control) => control && titleOf(control) !== queuedTitle);
+if (secondAdd) {
+  secondAdd.click();
+  queued = await settledQueue(2);
+  check("a second queued sleeve joins the first in both places",
+    Boolean(queued) && queued.count === 2 && queueRows().length === 2,
+    `card=${queueRows().length} api=${queued && queued.count}`);
+}
 
 // Reordering: the queue is rearranged by dragging a row, and the gesture is a
 // pointer drag so a finger works. The drop has to land as one `move` on the
 // console, so its own order is what is read back - not the page's copy of it.
-if (queueRows().length >= 2) {
+if (!queued || queued.count < 2) {
+  process.stdout.write(`     only ${queued && queued.count} track(s) came back from OpenDeck; the drag check needs two\n`);
+} else {
   const dragRows = queueRows();
   const titlesBefore = queued.queue.map((item) => item.title);
   // Rows have no layout in jsdom, so the geometry the drag reads is supplied:
@@ -380,15 +470,17 @@ if (queueRows().length >= 2) {
   });
 }
 
-const beforeRemove = queued.count;
+const settledBeforeRemove = await readQueue();
+const beforeRemove = settledBeforeRemove ? settledBeforeRemove.count : 0;
 const removeButton = queueRows()[0] && queueRows()[0].querySelector(".music-queue-remove");
 check("a queued row can be removed", Boolean(removeButton));
-if (removeButton) {
+if (removeButton && beforeRemove > 0) {
   removeButton.click();
-  await wait(1200);
-  queued = await fetch(BASE + "/api/music/queue").then((r) => r.json());
-  check("removing drops exactly one entry", queued.count === beforeRemove - 1,
-    `${beforeRemove} -> ${queued.count}`);
+  const afterRemove = await settledQueue(beforeRemove - 1);
+  check("removing drops exactly one entry in both places",
+    Boolean(afterRemove) && afterRemove.count === beforeRemove - 1 && queueRows().length === beforeRemove - 1,
+    `${beforeRemove} -> ${afterRemove && afterRemove.count} (card=${queueRows().length})`);
+  queued = afterRemove || queued;
 }
 
 const clearButton = [...root.querySelectorAll(".music-queue-actions button")]
@@ -396,28 +488,27 @@ const clearButton = [...root.querySelectorAll(".music-queue-actions button")]
 check("the queue offers a clear control", Boolean(clearButton));
 if (clearButton) {
   clearButton.click();
-  await wait(1200);
-  queued = await fetch(BASE + "/api/music/queue").then((r) => r.json());
-  const note = root.querySelector(".music-queue-card .music-empty");
-  check("clearing empties the queue", queued.count === 0 && queueRows().length === 0,
-    `api=${queued.count} rows=${queueRows().length}`);
-  check("the empty queue says so", note.textContent.includes("Nothing queued"), note.textContent);
+  queued = await settledQueue(0);
+  const note = root.querySelector(".music-queue-note");
+  check("clearing empties the queue", Boolean(queued) && queued.count === 0 && queueRows().length === 0,
+    `api=${queued && queued.count} rows=${queueRows().length}`);
+  check("the empty queue says so", /queue is empty/i.test(note.textContent), note.textContent);
 }
 
-if (LIVE_PLAY && rows().length) {
-  // The repeat search re-rendered the list, so the row is looked up again: a
-  // stale reference would be detached and its classes would prove nothing.
-  const first = rows()[0];
-  const label = first.querySelector("strong").textContent;
-  const note = browseNote();
+if (LIVE_PLAY && tiles().length) {
+  // The page re-renders its shelves, so the sleeve is looked up again: a stale
+  // reference would be detached and its classes would prove nothing.
+  const first = tiles()[0];
+  const label = first.querySelector(".music-tile-name").textContent;
+  const note = root.querySelector(".music-state");
   const notice = root.querySelector(".music-error");
   first.click();
-  check("the tapped row answers before the speaker does", first.classList.contains("is-pending"),
+  check("the tapped sleeve answers before the speaker does", first.classList.contains("is-pending"),
     "is-pending was not set synchronously");
 
   // The provider can take many seconds to resolve a stream, so the interface has
   // to show progress; and a refused stream has to end as a stated failure rather
-  // than a row that stays pending forever.
+  // than a sleeve that stays pending forever.
   const startedAt = Date.now();
   let countedOut = false;
   let settled = false;
@@ -428,9 +519,9 @@ if (LIVE_PLAY && rows().length) {
   }
   const elapsed = Math.round((Date.now() - startedAt) / 1000);
   check("the wait counts itself out instead of looking frozen", countedOut, note.textContent);
-  check("the tap settles (playing or an explicit failure), never a stuck row", settled,
-    `still pending after ${elapsed}s; rowConnected=${first.isConnected} class="${first.className}" ` +
-    `rows=${rows().length} note="${note.textContent}" notice="${notice.textContent}" ` +
+  check("the tap settles (playing or an explicit failure), never a stuck sleeve", settled,
+    `still pending after ${elapsed}s; tileConnected=${first.isConnected} class="${first.className}" ` +
+    `sleeves=${tiles().length} note="${note.textContent}" notice="${notice.textContent}" ` +
     `playCalls=${counts.get("/api/music/play")}`);
 
   const snapshot = await fetch(BASE + "/api/music/now-playing").then((r) => r.json());
@@ -438,16 +529,18 @@ if (LIVE_PLAY && rows().length) {
   const refused = reported.length > 0;
   const speakerPlaying = Boolean(snapshot.player && snapshot.player.state === "playing");
   // Two honest outcomes: the speaker is playing the tapped track, or the page
-  // says why it is not. Silence, or a row left pending, is the failure.
+  // says why it is not. Silence, or a sleeve left pending, is the failure.
   check("the outcome is reported to the user", speakerPlaying || refused,
     `speaker=${snapshot.player && snapshot.player.state} notice="${reported.slice(0, 120)}"`);
   if (speakerPlaying && !refused) {
     check("the speaker switched to the tapped track", valuesMatch(snapshot, label),
       `session=${snapshot.track && snapshot.track.title} tapped=${label}`);
-    check("the tapped row is marked as playing",
-      rows().some((row) => row.classList.contains("is-playing")), "no row carried is-playing");
-    check("the mini bar mirrors the track", root.querySelector(".music-mini").hidden === false,
-      root.querySelector(".music-mini strong").textContent);
+    check("the tapped sleeve is marked as playing",
+      tiles().some((tile) => tile.classList.contains("is-playing")), "no sleeve carried is-playing");
+    check("the hero shows the playing track",
+      root.querySelector(".music-now-title").textContent.length > 0
+        && root.querySelector(".music-app").classList.contains("playing"),
+      root.querySelector(".music-now-title").textContent);
   } else {
     process.stdout.write(`     the provider refused this stream after ${elapsed}s: ${reported.slice(0, 200)}\n`);
     check("a refused stream still marks the track it recorded",
@@ -456,10 +549,10 @@ if (LIVE_PLAY && rows().length) {
   // The queue's play-next path hands a queued track over like any other play,
   // so it has to end the same two honest ways: playing, or a stated refusal.
   const queueCallsBefore = counts.get("/api/music/queue") || 0;
-  const addForNext = root.querySelector(".music-queue-add");
+  const addForNext = root.querySelector(".music-shelves .music-queue-add");
   if (addForNext) {
     addForNext.click();
-    await wait(1500);
+    await wait(2000);
     const nextButton = [...root.querySelectorAll(".music-queue-actions button")]
       .find((button) => button.textContent.includes("Play next"));
     check("the queue has a play-next control", Boolean(nextButton));
@@ -484,16 +577,16 @@ if (LIVE_PLAY && rows().length) {
         // The page marks the entry from its own play-next response, which can
         // land a moment after the API poll above, so it is polled too.
         const markDeadline = Date.now() + 4000;
-        const marked = () => [...root.querySelectorAll(".music-queue-row")].some((row) => row.classList.contains("is-current"));
+        const marked = () => root.querySelector(".music-queue-row.is-current") !== null;
         while (!marked() && Date.now() < markDeadline) await wait(200);
         check("the queue marks the entry that is playing", marked(),
-          `rows=${[...root.querySelectorAll(".music-queue-row")].map((row) => row.className).join(",")}`);
+          `rows=${queueRows().map((row) => row.className).join(", ")}`);
       }
       const clearAfter = [...root.querySelectorAll(".music-queue-actions button")]
         .find((button) => button.textContent === "Clear");
       if (clearAfter) {
         clearAfter.click();
-        await wait(1200);
+        await wait(1500);
       }
     }
   }

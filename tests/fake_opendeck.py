@@ -41,6 +41,56 @@ LRCLIB_MATCH = {
 }
 
 
+# A track LRCLIB only has words (not timings) for, plus the two wrong answers a
+# search for it returns ahead of the right one: a same-length entry with another
+# name (whose timings must never be shown for it) and a live take whose length
+# gives it away. The right entry is last, so a worker that simply takes the first
+# candidate it can use fails this fixture instead of passing it.
+LRCLIB_WORDS_ONLY = {
+    "id": 4211,
+    "trackName": "Words Alone",
+    "artistName": "The Testers",
+    "albumName": "Plainly",
+    "duration": 200,
+    "instrumental": False,
+    "plainLyrics": "These are the words\nof a plain song",
+}
+LRCLIB_DECOY_NAME = {
+    "id": 4212,
+    "trackName": "Some Other Song",
+    "artistName": "The Testers",
+    "albumName": "Plainly",
+    "duration": 200,
+    "instrumental": False,
+    "plainLyrics": "",
+    "syncedLyrics": "[00:01.00] a different song's words\n[00:05.00] with timings\n",
+}
+LRCLIB_DECOY_LIVE = {
+    "id": 4213,
+    "trackName": "Words Alone (Live)",
+    "artistName": "The Testers",
+    "albumName": "Plainly live",
+    "duration": 260,
+    "instrumental": False,
+    "plainLyrics": "",
+    "syncedLyrics": "[00:01.00] the live take's words\n",
+}
+
+
+def _lrclib_response(inner_url: str):
+    """The provider's answer for one proxy URL, or None when it is a 404 fixture."""
+    lowered = inner_url.casefold()
+    if "nothing" in lowered:
+        return 404, b"{}"
+    if "words+alone" in lowered:
+        if "/api/search" in inner_url:
+            return 200, json.dumps([LRCLIB_DECOY_NAME, LRCLIB_DECOY_LIVE, LRCLIB_WORDS_ONLY]).encode("utf-8")
+        return 200, json.dumps(LRCLIB_WORDS_ONLY).encode("utf-8")
+    if "/api/search" in inner_url:
+        return 200, json.dumps([LRCLIB_MATCH]).encode("utf-8")
+    return 200, json.dumps(LRCLIB_MATCH).encode("utf-8")
+
+
 # ── the account's play log ────────────────────────────────────────────────
 # What `/api/history` lists, newest first. It is deliberately longer than one page
 # of search results: a log that held three plays could not show that a twelve-item
@@ -474,14 +524,10 @@ class _Handler(BaseHTTPRequestHandler):
                 self._proxy_envelope(200, json.dumps(_playlist_response()).encode("utf-8"))
                 return
             if "lrclib.net/api/" in inner_url:
-                if "nothing" in inner_url.casefold():
-                    # No provider match: the worker must report "no lyrics", not fail.
-                    self._proxy_envelope(404, b"{}")
-                    return
-                if "/api/search" in inner_url:
-                    self._proxy_envelope(200, json.dumps([LRCLIB_MATCH]).encode("utf-8"))
-                    return
-                self._proxy_envelope(200, json.dumps(LRCLIB_MATCH).encode("utf-8"))
+                # 404 is the fixture for "the provider has nothing", which the
+                # worker has to report as no lyrics rather than as a failure.
+                status, body = _lrclib_response(inner_url)
+                self._proxy_envelope(status, body)
                 return
             if "/youtubei/v1/player" in inner_url:
                 request_body = json.loads(raw.decode("utf-8"))

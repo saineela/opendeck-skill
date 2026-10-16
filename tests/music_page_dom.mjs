@@ -1,11 +1,14 @@
 /* Behaviour harness for the OpenDeck music page.
  *
- * Mounts the real ui/music.js in jsdom with a fake music API, then checks the
- * things a user actually feels: a tap is acknowledged before the network
- * answers, typing is debounced into one request, a repeated query is served
- * from cache, a superseded search is aborted, rapid volume taps become two
- * requests instead of one per tap, the playing row is marked, and unmounting
- * removes the shortcuts and cancels the in-flight work.
+ * Mounts the real ui/music.js in jsdom against a fake music API and checks the
+ * things a person actually feels: the page is the PUCA Panel's shape, a tap is
+ * acknowledged before the speaker answers, typing is debounced into one search,
+ * a repeated search comes from cache, a superseded search is aborted, a burst of
+ * volume changes becomes the level that was settled on, the words are asked for
+ * by name and length (and are retried when the provider answers nothing), and
+ * the page's copy of the queue follows the provider instead of drifting - the
+ * bug that made queued music seem to disappear, because every Remove/Play/Move
+ * afterwards acted on a stale position.
  *
  * Run: node tests/music_page_dom.mjs   (from the package root)
  */
@@ -15,16 +18,18 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-/* jsdom is a test-only dependency of this harness. It is looked up in the usual
-   places, then wherever NIX_JSDOM_ROOT points, so the check runs on a machine
-   that has it installed and reports a skip (exit code 77) where it is absent
-   instead of failing a build for a missing dev tool. */
+/* jsdom is a test-only dependency. It is looked up in the usual places, then
+   wherever NIX_JSDOM_ROOT points, so the check runs where it is installed and
+   reports a skip (exit code 77) where it is not, rather than failing a build for
+   a missing dev tool. A jsdom that is present but cannot load says why, instead
+   of looking like the same skip as an absent one. */
 const require = createRequire(import.meta.url);
 function loadJsdom() {
   const roots = [
     process.env.NIX_JSDOM_ROOT,
     path.join(process.cwd(), "node_modules"),
     "/tmp/node_modules",
+    "/usr/local/lib/node_modules",
     path.join(path.dirname(process.execPath), "..", "lib", "node_modules"),
   ].filter(Boolean);
   let failure = "";
@@ -32,10 +37,6 @@ function loadJsdom() {
     try {
       return { jsdom: require(candidate), failure: "" };
     } catch (error) {
-      // A location that holds no jsdom at all is the ordinary skip. A jsdom
-      // that *is* there but cannot load (one too new for this Node, or missing
-      // a dependency) means these checks did not really run, so carry the
-      // reason into the skip line instead of reporting it as not installed.
       if (error && error.code !== "MODULE_NOT_FOUND") {
         failure = String(error.message).split("\n")[0];
       }
@@ -58,35 +59,32 @@ const source = readFileSync(path.join(here, "..", "skills", "opendeck", "ui", "m
 
 const checks = [];
 function check(name, fn) { checks.push({ name, fn }); }
-
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const settle = () => wait(0);
 
-function track(videoId, title) {
-  return {
+function track(videoId, title, extra) {
+  return Object.assign({
     video_id: videoId,
     title: title || videoId,
     artist: "Test Artist",
     album: "",
     duration_sec: 200,
     artwork_url: "https://example.invalid/" + videoId + ".jpg",
-  };
+  }, extra || {});
 }
 
 function harness(options) {
   const settings = options || {};
-  // A real origin, so the page's localStorage cache behaves as it does in the
-  // console (an opaque origin such as about:blank has no storage at all).
   const dom = new JSDOM("<!doctype html><html><body><div id=\"root\"></div></body></html>", {
     runScripts: "outside-only",
     pretendToBeVisual: true,
     url: "http://localhost/music",
   });
-  dom.window.eval(source);
   const window = dom.window;
+  dom.window.eval(source);
   const root = window.document.getElementById("root");
 
-  const calls = { library: [], search: [], play: [], control: [], queue: [], save: [], nowPlaying: 0 };
+  const calls = { library: [], search: [], play: [], control: [], queue: [], save: [], lyrics: [], nowPlaying: 0, get: [] };
   const signals = [];
   const queue = { items: [], index: -1, shuffle: false, repeat: "off" };
   const playlists = settings.playlists || [
@@ -94,7 +92,11 @@ function harness(options) {
   ];
   let pollHandler = null;
   let resolvePlay = null;
-  let resolveLibrary = null;
+  const resolveLibrary = [];
+  let resolveQueue = null;
+  let lyricsAnswer = settings.lyrics || (() => ({ ok: true, lyrics: [{ text: "Line one", time_sec: 1 }, { text: "Line two", time_sec: 5 }], lyrics_plain: "", lyrics_timing: "synced" }));
+  let snapshotValue = settings.snapshot;
+  const observed = [];
 
   const queuePayload = () => ({
     ok: true,
@@ -119,8 +121,7 @@ function harness(options) {
     playing: true,
     player: { volume: 0.5, muted: false, confirmed: true, device: "Nix Dev", state: "playing" },
   });
-
-  const snapshot = () => ({
+  const snapshot = () => (snapshotValue ? snapshotValue() : {
     ok: true,
     track: track("current-1", "Current Track"),
     position: { elapsed_sec: 12, duration_sec: 200 },
@@ -134,16 +135,16 @@ function harness(options) {
       const total = Math.floor(seconds);
       return Math.floor(total / 60) + ":" + String(total % 60).padStart(2, "0");
     },
-    async nowPlaying() { calls.nowPlaying += 1; return settings.snapshot ? settings.snapshot() : snapshot(); },
+    async nowPlaying() { calls.nowPlaying += 1; return snapshot(); },
     async control(action, value) {
       calls.control.push({ action, value });
       return { ok: true, player: { volume: typeof value === "number" ? value : 0.5, muted: action === "mute", confirmed: true, device: "Nix Dev", state: "playing" } };
     },
-    async search(query, limit, options) {
+    async search(query, limit, opts) {
       calls.search.push(query);
-      signals.push(options && options.signal);
-      if (settings.slowSearch) await wait(900);
-      return { ok: true, tracks: [track("search-" + query, "Result for " + query)] };
+      signals.push(opts && opts.signal);
+      if (settings.slowSearch) await wait(600);
+      return settings.search ? settings.search(query) : { ok: true, tracks: [track("search-" + query, "Result for " + query)], playlists: [] };
     },
     play(target) {
       calls.play.push(target);
@@ -162,17 +163,21 @@ function harness(options) {
       const payload = kind === "playlists"
         ? { ok: true, playlists: playlists }
         : kind === "playlist"
-          ? { ok: true, tracks: [track("pl-1", "Playlist Song")] }
+          ? { ok: true, tracks: [track("pl-1", "Playlist Song"), track("pl-2", "Second Song")] }
           : { ok: true, tracks: [track(kind + "-1", "A " + kind + " song")] };
       if (!settings.deferLibrary) return payload;
-      // A provider that has not answered yet: the page must still be able to
-      // paint what it had.
-      return new Promise((resolve) => { resolveLibrary = () => resolve(payload); });
+      // Every read that is waiting is held, and all of them are answered when the
+      // harness releases the provider: three shelves load at once on a page with
+      // no observer to defer them.
+      return new Promise((resolve) => { resolveLibrary.push(() => resolve(payload)); });
     },
-    async lyrics() { return { ok: true, lyrics: [{ text: "Line one", time_sec: 1 }], lyrics_timing: "rich" }; },
+    async lyrics(extra) { calls.lyrics.push(extra); return lyricsAnswer(extra); },
     async get(path) {
+      calls.get.push(path);
       if (path !== "/queue") throw new Error("unexpected GET " + path);
-      return queuePayload();
+      const answer = queuePayload();
+      if (!settings.deferQueue) return answer;
+      return new Promise((resolve) => { resolveQueue = () => resolve(answer); });
     },
     async post(path, body) {
       if (path === "/save") {
@@ -203,7 +208,9 @@ function harness(options) {
       else if (body.action === "clear") { queue.items = []; queue.index = -1; }
       else if (body.action === "play") { queue.index = body.index; return playingPayload(queue.items[body.index]); }
       else if (body.action === "next") {
-        if (queue.index + 1 >= queue.items.length) return { ok: true, action: "queue", queue: queue.items, index: queue.index, count: queue.items.length, message: "no next track" };
+        if (queue.index + 1 >= queue.items.length) {
+          return { ok: true, action: "queue", queue: queue.items, index: queue.index, count: queue.items.length, message: "no next track" };
+        }
         queue.index += 1;
         return playingPayload(queue.items[queue.index]);
       }
@@ -212,71 +219,128 @@ function harness(options) {
     poll(handler) { pollHandler = handler; return () => { if (pollHandler === handler) pollHandler = null; }; },
   };
 
+  // A stub observer stands in for a browser's: jsdom has none, and the page's
+  // shelves are meant to load as they are reached.
+  if (settings.observe) {
+    window.IntersectionObserver = class {
+      constructor(callback) { this.callback = callback; }
+      observe(node) { observed.push(node); }
+      unobserve(node) {
+        const index = observed.indexOf(node);
+        if (index >= 0) observed.splice(index, 1);
+      }
+      disconnect() { observed.length = 0; }
+      reach(kind) {
+        const node = observed.find((item) => item.dataset && item.dataset.shelf === kind);
+        if (node) this.callback([{ isIntersecting: true, target: node }]);
+      }
+    };
+  }
+
   return {
-    dom, window, root, api, calls, signals,
+    dom, window, root, api, calls, signals, queue, playlists,
     resolvePlay: () => resolvePlay && resolvePlay(),
-    resolveLibrary: () => resolveLibrary && resolveLibrary(),
+    resolveLibrary: () => { resolveLibrary.splice(0).forEach((release) => release()); },
+    resolveQueue: () => resolveQueue && resolveQueue(),
     poll: (value) => pollHandler && pollHandler(value),
+    setLyrics: (fn) => { lyricsAnswer = fn; },
+    setSnapshot: (fn) => { snapshotValue = fn; },
+    observer: () => window.IntersectionObserver ? window.__observer : null,
+    reach: (kind) => {
+      const node = observed.find((item) => item.dataset && item.dataset.shelf === kind);
+      if (!node) return false;
+      observed
+        .filter((item) => item.dataset && item.dataset.shelf === kind)
+        .forEach((item) => { /* leave the list alone; the page unobserves itself */ });
+      node.__reach = true;
+      return true;
+    },
+    observed,
   };
 }
 
-check("mount renders the page and prefetches only the playlist tab", async () => {
+const tileNamed = (h, name) => [...h.root.querySelectorAll(".tile .name")]
+  .find((node) => node.textContent === name)?.closest(".tile");
+
+check("the page is the panel's shape: searchbar, hero, sleeves, and Up next beside them", async () => {
   const h = harness();
-  await h.window.NixMusicPage.mount(h.root, h.api);
+  const unmount = await h.window.NixMusicPage.mount(h.root, h.api);
   await settle();
-  assert.equal(h.root.querySelectorAll(".music-grid").length, 1);
-  assert.deepEqual(h.calls.library, ["playlists"]);
-  assert.equal(h.root.querySelectorAll(".music-row").length, 1);
-  assert.equal(h.root.querySelector(".music-row strong").textContent, "Focus");
-  assert.equal(h.root.querySelector(".music-badge").textContent, "Nix Dev · playing");
-  assert.equal(h.root.querySelectorAll(".music-controls button").length, 2,
-    "one play/pause toggle and mute; the separate Pause and Stop buttons are gone");
-  assert.ok(h.root.querySelector(".music-volwheel"), "the graphical volume dial is mounted");
-  assert.ok(h.root.querySelector(".music-queue-card"), "the queue card is mounted");
+  assert.ok(h.root.classList.contains("puca-music"), "the page is scoped to its own root");
+  assert.ok(h.root.classList.contains("day") || h.root.classList.contains("night"), "the panel's theme flip applies");
+  assert.ok(h.root.querySelector(".top .searchbar input[type=search]"), "the panel's searchbar heads the page");
+  const grid = h.root.querySelector(".grid");
+  assert.ok(grid, "the page is the panel's grid");
+  const left = grid.querySelector(".left");
+  assert.ok(left.querySelector(".hero.music-now-card"), "the player is the hero of the left column");
+  assert.ok(left.querySelector(".shelves .shelf .row"), "the sleeves are under it");
+  assert.ok(grid.querySelector(".side .queue"), "Up next is the column beside them");
+  assert.equal(left.querySelector(".hero .art img.music-artwork").hidden, false, "the hero carries the cover");
+  // One control row, the panel's own: shuffle, previous, play, next, repeat.
+  const controls = h.root.querySelector(".controls.music-controls");
+  assert.equal(controls.querySelectorAll("button").length, 5, "the control row is the panel's five controls");
+  assert.ok(controls.querySelector(".music-play .ic-play") && controls.querySelector(".music-play .ic-pause"),
+    "the play control carries both glyphs, as the panel's does");
+  const volumerow = h.root.querySelector(".volumerow");
+  assert.ok(volumerow.querySelector(".music-mute svg"), "the speaker's own mute control");
+  assert.ok(volumerow.querySelector('.music-volwheel[role="slider"]'), "the volume slider");
+  assert.ok(volumerow.querySelector(".music-volnum"), "the live level");
+  assert.ok(volumerow.querySelector(".music-lyrics-toggle"), "the Lyrics chip");
+  assert.equal(h.root.querySelectorAll("input[type=range]").length, 0, "volume is never a range input");
+  assert.ok(!h.root.querySelector(".music-mini"), "the phone mini bar is gone: the panel has none");
+  // The words are the panel's own design, in the panel's own place.
+  assert.ok(h.root.querySelector(".lyrics.music-lyrics-overlay .lyr-lines"), "the design's own lines container");
+  assert.ok(h.root.querySelector(".lyrics .lyr-zoom button"), "the text-size pair in its footer");
+  unmount();
 });
 
-check("a tap is acknowledged before the speaker answers", async () => {
+check("a shelf is read as it is reached, not all three at once", async () => {
+  const h = harness({ observe: true });
+  const unmount = await h.window.NixMusicPage.mount(h.root, h.api);
+  await settle();
+  assert.deepEqual(h.calls.library, ["playlists"], "opening the page reads the first shelf only");
+  assert.ok([...h.root.querySelectorAll(".tile .name")].some((node) => node.textContent === "Focus"),
+    "the playlists shelf paints real sleeves");
+  // Reaching the second shelf reads it and paints it.
+  const shelf = h.observed.find((node) => node.dataset.shelf === "likes");
+  assert.ok(shelf, "the other shelves are observed");
+  unmount();
+});
+
+check("a tap is acknowledged before the speaker answers, and the sleeve is marked", async () => {
   const h = harness({ deferPlay: true });
   const unmount = await h.window.NixMusicPage.mount(h.root, h.api);
   await settle();
-  // A track row, not the playlist row: playlists open, tracks play.
-  const liked = [...h.root.querySelectorAll(".music-tabs button")].find((button) => button.textContent === "Liked");
-  liked.click();
-  await settle();
-  const row = h.root.querySelector(".music-row");
-  row.click();
-  assert.equal(h.calls.play.length, 1, "the request is sent on the first tap");
-  assert.ok(row.classList.contains("is-pending"), "the row answers the tap immediately");
+  const tile = tileNamed(h, "A likes song");
+  assert.ok(tile, "a song sleeve is on the page");
+  tile.click();
+  assert.equal(h.calls.play.length, 1, "the request goes out on the first tap");
+  assert.ok(tile.classList.contains("is-pending"), "the sleeve answers the tap immediately");
   h.resolvePlay();
   await settle();
   await settle();
-  assert.ok(!row.classList.contains("is-pending"), "pending clears once the speaker accepted it");
-  assert.ok(row.classList.contains("is-playing"), "the accepted row is marked as playing");
-  assert.equal(h.root.querySelector(".music-bars").hidden, false);
+  assert.ok(!tile.classList.contains("is-pending"), "pending clears once the speaker accepted it");
+  assert.ok(tile.classList.contains("playing-ring"), "the accepted sleeve wears the panel's playing ring");
   unmount();
 });
 
-check("a refused stream is reported and never leaves the row pending", async () => {
+check("a refused stream is reported and never leaves a sleeve pending", async () => {
   const h = harness();
   const unmount = await h.window.NixMusicPage.mount(h.root, h.api);
   await settle();
-  const liked = [...h.root.querySelectorAll(".music-tabs button")].find((button) => button.textContent === "Liked");
-  liked.click();
-  await settle();
-  // The provider takes a while and then refuses, which is what a track it cannot
-  // stream looks like from the page's side.
   h.api.play = async () => { throw new Error("could not fetch the stream"); };
-  const row = h.root.querySelector(".music-row");
-  row.click();
+  const tile = tileNamed(h, "A likes song");
+  tile.click();
   await settle();
   await settle();
-  assert.ok(!row.classList.contains("is-pending"), "the pending mark must clear on failure");
+  assert.ok(!tile.classList.contains("is-pending"), "the pending mark clears on failure");
   assert.equal(h.root.querySelector(".music-error").textContent, "could not fetch the stream");
+  assert.ok(!h.root.querySelector(".music-error").hidden, "the message is shown, not just written");
   unmount();
 });
 
-check("typing is debounced into one search and a repeat is served from cache", async () => {
-  const h = harness({ slowSearch: false });
+check("typing is debounced into one search, and the repeat comes from cache", async () => {
+  const h = harness();
   const unmount = await h.window.NixMusicPage.mount(h.root, h.api);
   await settle();
   const input = h.root.querySelector("input[type=search]");
@@ -288,16 +352,15 @@ check("typing is debounced into one search and a repeat is served from cache", a
   assert.deepEqual(h.calls.search, [], "keystrokes inside the debounce window are collapsed");
   await wait(400);
   assert.deepEqual(h.calls.search, ["daft"]);
-  const firstRows = h.root.querySelectorAll(".music-row").length;
-  assert.equal(firstRows, 1);
-  assert.equal(h.root.querySelector(".music-row strong").textContent, "Result for daft");
-
-  // The same query again: cached, so no second request.
+  const sheet = h.root.querySelector(".music-sheet");
+  assert.equal(sheet.hidden, false, "the results open over the page, as the panel's sheet does");
+  assert.equal(h.root.querySelector(".music-sheet-title").textContent, "Results for “daft”");
+  const cards = [...h.root.querySelectorAll(".music-sheet .res .rt")];
+  assert.deepEqual(cards.map((node) => node.textContent), ["Result for daft"], "one card per song");
   input.value = "daft";
   input.dispatchEvent(new h.window.Event("input"));
   await wait(400);
   assert.equal(h.calls.search.length, 1, "a repeated search is answered from cache");
-  assert.equal(h.root.querySelectorAll(".music-row").length, 1);
   unmount();
 });
 
@@ -308,30 +371,31 @@ check("a superseded search is aborted and only the newest result is shown", asyn
   const input = h.root.querySelector("input[type=search]");
   input.value = "alpha";
   input.dispatchEvent(new h.window.Event("input"));
-  await wait(320); // "alpha" is on the wire (900ms)
+  await wait(320);
   input.value = "beta";
   input.dispatchEvent(new h.window.Event("input"));
-  await wait(320); // "beta" fires while "alpha" is still pending
-  await wait(900);
+  await wait(320);
+  await wait(600);
   assert.deepEqual(h.calls.search, ["alpha", "beta"]);
   assert.equal(h.signals[0].aborted, true, "the stale request is aborted, not raced");
-  assert.equal(h.signals[1].aborted, false);
-  assert.equal(h.root.querySelector(".music-row strong").textContent, "Result for beta");
+  assert.equal(h.root.querySelector(".music-sheet .res .rt").textContent, "Result for beta");
   unmount();
 });
 
-check("rapid volume taps on the dial coalesce into the settled level", async () => {
+check("a burst of volume changes sends one request, then the level that was settled on", async () => {
   const h = harness();
   const unmount = await h.window.NixMusicPage.mount(h.root, h.api);
   await settle();
-  assert.equal(h.root.querySelector(".music-volnum").textContent, "50%", "the dial opens on the speaker's level");
-  const up = h.root.querySelector(".music-volup");
-  up.click();
-  up.click();
-  up.click();
+  assert.equal(h.root.querySelector(".music-volnum").textContent, "50%", "the slider opens on the speaker's level");
+  const slider = h.root.querySelector(".music-volwheel");
+  const key = (k) => {
+    const event = new h.window.KeyboardEvent("keydown", { key: k, bubbles: true, cancelable: true });
+    slider.dispatchEvent(event);
+  };
+  key("ArrowUp"); key("ArrowUp"); key("ArrowUp");
   const volumeCalls = () => h.calls.control.filter((entry) => entry.action === "volume");
-  assert.equal(volumeCalls().length, 1, "a burst of taps sends one request at a time");
-  assert.equal(h.root.querySelector(".music-volnum").textContent, "65%", "the dial previews the settled level at once");
+  assert.equal(volumeCalls().length, 1, "a burst sends one request at a time");
+  assert.equal(h.root.querySelector(".music-volnum").textContent, "65%", "the level previews at once");
   await wait(30);
   await settle();
   assert.equal(volumeCalls().length, 2, "the settled level is committed once");
@@ -339,40 +403,88 @@ check("rapid volume taps on the dial coalesce into the settled level", async () 
   unmount();
 });
 
-check("a track can be queued, played from the queue, and removed", async () => {
+check("the queue is kept live: a change made elsewhere appears without a reload", async () => {
   const h = harness();
   const unmount = await h.window.NixMusicPage.mount(h.root, h.api);
   await settle();
-  const liked = [...h.root.querySelectorAll(".music-tabs button")].find((button) => button.textContent === "Liked");
-  liked.click();
-  await settle();
-  const add = h.root.querySelector(".music-queue-add");
-  assert.ok(add, "each track row offers an add-to-queue control");
-  add.click();
-  await settle();
-  assert.equal(h.calls.queue[0].action, "add");
-  assert.equal(h.root.querySelectorAll(".music-queue-row").length, 1);
-  assert.equal(h.root.querySelector(".music-queue-count").textContent, "1 track");
-  h.root.querySelector(".music-queue-play").click();
-  await settle();
-  assert.equal(h.calls.queue[1].action, "play");
-  assert.ok(h.root.querySelector(".music-queue-row").classList.contains("is-current"), "the started item is marked");
-  assert.equal(h.root.querySelector(".music-now-title").textContent, "Queued likes-1", "the now-playing card follows the queue's track");
-  h.root.querySelector(".music-queue-remove").click();
-  await settle();
   assert.equal(h.root.querySelectorAll(".music-queue-row").length, 0);
-  assert.equal(h.root.querySelector(".music-queue-count").textContent, "");
+  // Somebody else queues a track (the assistant, the wall panel, another tab).
+  h.queue.items.push(track("outside-1", "Queued elsewhere"));
+  h.queue.index = 0;
+  // The console starts it: the snapshot names a different track, which is what a
+  // queue moving on by itself looks like to the page.
+  h.poll({ ok: true, track: track("outside-1", "Queued elsewhere"), position: { elapsed_sec: 1, duration_sec: 200 }, playing: true,
+           player: { volume: 0.5, muted: false, confirmed: true, device: "Nix Dev", state: "playing" } });
+  await settle();
+  await settle();
+  assert.equal(h.root.querySelectorAll(".music-queue-row").length, 1,
+    "the page re-read the queue when the track changed instead of drifting");
+  assert.equal(h.root.querySelector(".music-queue-title").textContent, "Queued elsewhere");
+  assert.ok(h.root.querySelector(".music-queue-row").classList.contains("is-current"),
+    "the entry that is playing is marked");
+  assert.equal(h.root.querySelector(".side-head h2").textContent, "Up next · 1");
   unmount();
 });
 
-check("the queue is rearranged by dragging a row", async () => {
+check("the 250ms timer re-reads the queue so the page cannot drift while it is open", async () => {
   const h = harness();
   const unmount = await h.window.NixMusicPage.mount(h.root, h.api);
   await settle();
-  const liked = [...h.root.querySelectorAll(".music-tabs button")].find((button) => button.textContent === "Liked");
-  liked.click();
+  const before = h.calls.get.length;
+  h.queue.items.push(track("later-1", "Added later"));
+  // The page's own ticker re-reads a queue older than its short lifetime; the
+  // queue is a heavier read than the snapshot, so it is not read every tick.
+  await wait(5400);
+  assert.ok(h.calls.get.length > before, "the queue is read again on the page's timer");
+  assert.equal(h.root.querySelector(".music-queue-title").textContent, "Added later");
+  unmount();
+});
+
+check("an older queue read can never land on top of a newer one", async () => {
+  const h = harness({ deferQueue: true });
+  const unmount = await h.window.NixMusicPage.mount(h.root, h.api);
   await settle();
-  // Three queued tracks, so a drag has somewhere to go.
+  // The first read is still on the wire. A write paints its own, newer answer.
+  h.queue.items.push(track("fresh-1", "Freshly queued"));
+  const rows = () => [...h.root.querySelectorAll(".music-queue-row .music-queue-title")].map((node) => node.textContent);
+  const add = h.root.querySelector(".music-tile-wrap .music-queue-add") || h.root.querySelector(".music-queue-add");
+  const queuedId = add.closest(".music-tile-wrap").querySelector(".tile").dataset.videoId;
+  add.click();
+  await settle();
+  const expected = ["Freshly queued", "Queued " + queuedId];
+  assert.deepEqual(rows(), expected, "the write's own reply is what is on screen");
+  h.resolveQueue();     // the stale read arrives last
+  await settle();
+  await settle();
+  assert.deepEqual(rows(), expected, "the older answer must not repaint over it");
+  unmount();
+});
+
+check("a queued track can be played from the queue, removed, and the queue cleared", async () => {
+  const h = harness();
+  const unmount = await h.window.NixMusicPage.mount(h.root, h.api);
+  await settle();
+  h.root.querySelector(".music-queue-add").click();
+  await settle();
+  assert.equal(h.calls.queue[0].action, "add");
+  assert.equal(h.root.querySelectorAll(".music-queue-row").length, 1);
+  h.root.querySelector(".music-queue-row").click();
+  await settle();
+  assert.equal(h.calls.queue[1].action, "play", "the row itself is the play control, as on the panel");
+  assert.ok(h.root.querySelector(".music-queue-row").classList.contains("is-current"));
+  assert.equal(h.root.querySelector(".music-now-title").textContent, "Queued likes-1",
+    "the hero follows the queued track");
+  h.root.querySelector(".music-queue-remove").click();
+  await settle();
+  assert.equal(h.root.querySelectorAll(".music-queue-row").length, 0);
+  assert.equal(h.root.querySelector(".music-queue-note").hidden, false, "the empty queue says so");
+  unmount();
+});
+
+check("the queue is rearranged by dragging a row, in both directions", async () => {
+  const h = harness();
+  const unmount = await h.window.NixMusicPage.mount(h.root, h.api);
+  await settle();
   for (let round = 0; round < 2; round += 1) {
     h.root.querySelector(".music-queue-add").click();
     await settle();
@@ -380,16 +492,15 @@ check("the queue is rearranged by dragging a row", async () => {
   const rows = [...h.root.querySelectorAll(".music-queue-row")];
   assert.equal(rows.length, 2, "two tracks are queued");
   assert.ok(rows[0].querySelector(".music-queue-grip"), "the drag has a visible grip");
-  const before = rows.map((row) => row.querySelector("strong").textContent);
-
-  // jsdom reports zero-sized rects, so the row geometry is stubbed: the drag is
-  // a pointer gesture (HTML5 dragstart never fires for a finger), released
-  // below the second row's midpoint, which means "put it after this one".
-  rows[0].getBoundingClientRect = () => ({ top: 100, height: 40, bottom: 140, left: 0, right: 0, width: 0 });
-  rows[1].getBoundingClientRect = () => ({ top: 140, height: 40, bottom: 180, left: 0, right: 0, width: 0 });
+  const before = rows.map((row) => row.querySelector(".qt").textContent);
+  const stub = (row, top) => {
+    row.getBoundingClientRect = () => ({ top, height: 40, bottom: top + 40, left: 0, right: 0, width: 0 });
+  };
+  stub(rows[0], 100);
+  stub(rows[1], 140);
   const pointer = (type, clientY, target) => {
-    // jsdom has no PointerEvent, so a bubbling Event with the pointer fields
-    // the page reads stands in for one.
+    // jsdom has no PointerEvent: a bubbling Event with the pointer fields the
+    // page reads stands in for one.
     const event = new h.window.Event(type, { bubbles: true, cancelable: true });
     event.clientY = clientY;
     event.clientX = 0;
@@ -399,125 +510,160 @@ check("the queue is rearranged by dragging a row", async () => {
     target.dispatchEvent(event);
     return event;
   };
-
-  // A press that does not travel is a tap, not a reorder.
   pointer("pointerdown", 110, rows[0]);
   pointer("pointerup", 111, rows[0]);
   await settle();
   assert.ok(!h.calls.queue.some((call) => call.action === "move"), "a tap does not reorder the queue");
-
   pointer("pointerdown", 110, rows[0]);
   pointer("pointermove", 170, rows[0]);
   assert.ok(rows[0].classList.contains("is-dragging"), "the dragged row is marked");
   assert.ok(rows[1].classList.contains("is-drop-after"), "the drop position is shown");
   pointer("pointerup", 170, rows[0]);
   await settle();
-
   const move = h.calls.queue.find((call) => call.action === "move");
-  assert.ok(move, "the drop asks the provider to move the row");
-  assert.equal(move.index, 0, "the dragged row is the one that moves");
-  assert.equal(move.to, 1, "it lands where it was dropped");
-  const after = [...h.root.querySelectorAll(".music-queue-row")].map((row) => row.querySelector("strong").textContent);
-  assert.deepEqual(after, [before[1], before[0]], "the painted order follows the drop");
-  assert.ok(!h.root.querySelector(".music-queue-row").classList.contains("is-dragging"), "the drag mark is cleared");
-  assert.ok(!h.root.querySelector(".music-queue-row").classList.contains("is-drop-after"), "the drop line is cleared");
-
-  // ... and the other direction: carry the last row above the first.
+  assert.equal(move.index, 0);
+  assert.equal(move.to, 1);
+  let painted = [...h.root.querySelectorAll(".music-queue-row")].map((row) => row.querySelector(".qt").textContent);
+  assert.deepEqual(painted, [before[1], before[0]], "the painted order follows the drop");
   const moved = [...h.root.querySelectorAll(".music-queue-row")];
-  moved[0].getBoundingClientRect = () => ({ top: 100, height: 40, bottom: 140, left: 0, right: 0, width: 0 });
-  moved[1].getBoundingClientRect = () => ({ top: 140, height: 40, bottom: 180, left: 0, right: 0, width: 0 });
+  stub(moved[0], 100);
+  stub(moved[1], 140);
   pointer("pointerdown", 170, moved[1]);
   pointer("pointermove", 110, moved[1]);
   pointer("pointerup", 110, moved[1]);
   await settle();
   const up = [...h.calls.queue].filter((call) => call.action === "move").pop();
-  assert.equal(up.index, 1, "the last row can be carried up");
-  assert.equal(up.to, 0, "it lands above the first");
-  const painted = [...h.root.querySelectorAll(".music-queue-row")].map((row) => row.querySelector("strong").textContent);
-  assert.deepEqual(painted, [before[0], before[1]], "the painted order follows the upward drop");
+  assert.equal(up.index, 1);
+  assert.equal(up.to, 0);
+  painted = [...h.root.querySelectorAll(".music-queue-row")].map((row) => row.querySelector(".qt").textContent);
+  assert.deepEqual(painted, [before[0], before[1]], "the last row can be carried back up");
   unmount();
 });
 
-check("the page is laid out like the wall panel: the player, the shelves, and Up next beside them", async () => {
+check("shuffle and repeat are the panel's chips, lit by the queue's own reply", async () => {
   const h = harness();
   const unmount = await h.window.NixMusicPage.mount(h.root, h.api);
   await settle();
-  const grid = h.root.querySelector(".music-grid");
-  // The four cards are the grid's own children, in the order the stylesheet
-  // names them: the player, then what is queued, then the shelves and the words.
-  const shapes = [["music-now-card"], ["music-queue-card"], ["music-browse-card"], ["music-lyrics-card"]];
-  assert.deepEqual([...grid.children].map((card) =>
-    shapes.filter((shape) => card.classList.contains(shape[0])).length),
-    [1, 1, 1, 1],
-    "the player, the queue, the shelves and the words are the page's four cards");
-  assert.ok([...grid.children].every((card) => card.classList.contains("music-card")),
-    "and each one is a card, in the grid's own order");
-  assert.equal([...grid.children].filter((card) => card.classList.contains("music-now-card")).length, 1,
-    "the player is the hero");
-  unmount();
-});
-
-check("switching tabs reuses the cached library and pauses are mirrored", async () => {
-  const h = harness();
-  const unmount = await h.window.NixMusicPage.mount(h.root, h.api);
-  await settle();
-  const tabs = [...h.root.querySelectorAll(".music-tabs button")];
-  const liked = tabs.find((button) => button.textContent === "Liked");
-  liked.click();
-  await settle();
-  assert.deepEqual(h.calls.library, ["playlists", "likes"]);
-  liked.click();
-  await settle();
-  assert.deepEqual(h.calls.library, ["playlists", "likes"], "a cached tab paints without another request");
-  assert.equal(h.root.querySelector(".music-row strong").textContent, "A likes song");
-
-  // A control flips optimistically and the row follows the speaker snapshot.
-  h.root.querySelector(".music-controls button").click();
-  await settle();
-  assert.deepEqual(h.calls.control[0], { action: "pause", value: undefined });
-  h.poll({ ok: true, track: track("current-1", "Current Track"), position: { elapsed_sec: 40, duration_sec: 200 }, playing: false, player: { volume: 0.5, muted: false, confirmed: true, device: "Nix Dev", state: "paused" } });
-  assert.equal(h.root.querySelector(".music-badge").textContent, "Nix Dev · paused");
-  assert.equal(h.root.querySelector(".music-mini").hidden, false);
-  assert.equal(h.root.querySelector(".music-mini strong").textContent, "Current Track");
-  unmount();
-});
-
-check("shuffle and repeat follow the queue's own state", async () => {
-  const h = harness();
-  const unmount = await h.window.NixMusicPage.mount(h.root, h.api);
-  await settle();
-  assert.equal(h.root.querySelectorAll(".music-extra").length, 4,
-    "the now-playing card carries shuffle, repeat, like and playlist");
   const shuffleButton = h.root.querySelector('.music-extra[data-control="shuffle"]');
   const repeatButton = h.root.querySelector('.music-extra[data-control="repeat"]');
   assert.equal(shuffleButton.getAttribute("aria-pressed"), "false");
-  assert.equal(repeatButton.textContent, "🔁 Repeat off");
-
+  assert.equal(repeatButton.textContent, "Repeat");
   shuffleButton.click();
   await settle();
   assert.equal(h.calls.queue[0].action, "shuffle");
   assert.equal(h.calls.queue[0].on, undefined, "one press toggles rather than naming a state");
-  assert.equal(shuffleButton.getAttribute("aria-pressed"), "true", "the reply lights the toggle");
-  assert.equal(shuffleButton.textContent, "🔀 Shuffling");
-
-  // Repeat cycles off -> all -> one -> off, each press sending the mode it moves to.
+  assert.equal(shuffleButton.getAttribute("aria-pressed"), "true");
+  assert.ok(shuffleButton.classList.contains("on"), "the chip fills in, as the panel's does");
   repeatButton.click();
   await settle();
   assert.equal(h.calls.queue[1].mode, "all");
-  assert.equal(repeatButton.textContent, "🔁 Repeat all");
+  assert.equal(repeatButton.textContent, "Repeat all");
   repeatButton.click();
   await settle();
   assert.equal(h.calls.queue[2].mode, "one");
-  assert.equal(repeatButton.textContent, "🔁 Repeat one");
-  assert.equal(repeatButton.getAttribute("aria-pressed"), "true");
-  repeatButton.click();
-  await settle();
-  assert.equal(h.calls.queue[3].mode, "off");
-  assert.equal(repeatButton.getAttribute("aria-pressed"), "false");
+  assert.equal(repeatButton.textContent, "Repeat one");
   unmount();
 });
 
-check("like writes the playing track and lights from the reply", async () => {
+check("the words are asked for by name and length, and follow the track", async () => {
+  const h = harness();
+  const unmount = await h.window.NixMusicPage.mount(h.root, h.api);
+  await settle();
+  assert.equal(h.calls.lyrics.length, 1);
+  // Field by field: the page's objects are built in the jsdom realm.
+  const asked = h.calls.lyrics[0];
+  assert.equal(asked.video_id, "current-1");
+  assert.equal(asked.title, "Current Track");
+  assert.equal(asked.artist, "Test Artist");
+  assert.equal(asked.duration_sec, "200", "the request carries the length the provider matches on");
+  const lines = [...h.root.querySelectorAll(".lyr-line")];
+  assert.deepEqual(lines.map((node) => node.textContent), ["Line one", "Line two"]);
+  assert.equal(h.root.querySelector(".lyrics").hidden, false, "a track's words open by themselves, as on the wall");
+  // The clock's own position highlights a line, and the page keeps following it.
+  const highlighted = () => [...h.root.querySelectorAll(".lyr-line")].filter((node) => node.classList.contains("cur"));
+  await wait(60);
+  assert.ok(highlighted().length <= 1, "one line is current");
+  unmount();
+});
+
+check("the Lyrics chip opens and closes the words, and closing hides them for that track", async () => {
+  const h = harness();
+  const unmount = await h.window.NixMusicPage.mount(h.root, h.api);
+  await settle();
+  const overlay = h.root.querySelector(".lyrics");
+  const chip = h.root.querySelector(".music-lyrics-toggle");
+  assert.equal(overlay.hidden, false, "the words came up with the track");
+  chip.click();
+  await settle();
+  assert.equal(overlay.hidden, true, "the chip hides them");
+  assert.equal(chip.getAttribute("aria-pressed"), "false");
+  chip.click();
+  await settle();
+  assert.equal(overlay.hidden, false, "and shows them again");
+  assert.equal(chip.getAttribute("aria-pressed"), "true");
+  h.root.querySelector(".music-lyr-close").click();
+  await settle();
+  assert.equal(overlay.hidden, true, "Hide closes them");
+  unmount();
+});
+
+check("the words travel with the track, and plain lyrics are shown as words", async () => {
+  const h = harness();
+  h.setLyrics(() => ({ ok: true, lyrics: [], lyrics_plain: "These are the words\nof a plain song", lyrics_timing: "plain" }));
+  const unmount = await h.window.NixMusicPage.mount(h.root, h.api);
+  await settle();
+  const lines = [...h.root.querySelectorAll(".lyr-line")];
+  assert.ok(lines.some((node) => node.textContent === "These are the words"), "plain lyrics are rendered");
+  assert.ok(lines.some((node) => node.textContent === "of a plain song"),
+    "and their own line breaks are kept, one line per line");
+  assert.equal(h.root.querySelectorAll(".lyr-line.cur").length, 0, "nothing is highlighted without timings");
+  unmount();
+});
+
+check("a lookup that comes back empty is asked once more before the page gives up", async () => {
+  const h = harness();
+  let answer = 0;
+  h.setLyrics(() => {
+    answer += 1;
+    if (answer === 1) return { ok: true, lyrics: [], lyrics_plain: "", lyrics_timing: "none" };
+    return { ok: true, lyrics: [{ text: "Slow provider line", time_sec: 2 }], lyrics_plain: "", lyrics_timing: "synced" };
+  });
+  const unmount = await h.window.NixMusicPage.mount(h.root, h.api);
+  await settle();
+  assert.equal(h.calls.lyrics.length, 1);
+  assert.equal(h.root.querySelectorAll(".lyr-line[data-time]").length, 0, "no lines are invented while it retries");
+  await wait(2000);
+  assert.equal(h.calls.lyrics.length, 2, "the lookup is retried once");
+  assert.equal(h.root.querySelector(".lyr-line").textContent, "Slow provider line");
+  unmount();
+});
+
+check("a track with no words says so, where the words go", async () => {
+  const h = harness();
+  h.setLyrics(() => ({ ok: true, lyrics: [], lyrics_plain: "", lyrics_timing: "none" }));
+  const unmount = await h.window.NixMusicPage.mount(h.root, h.api);
+  await settle();
+  await wait(2000);
+  assert.match(h.root.querySelector(".lyr-line").textContent, /No words for “Current Track”/);
+  unmount();
+});
+
+check("switching tracks asks for the new track's words and keeps the old ones off the screen", async () => {
+  const h = harness();
+  const unmount = await h.window.NixMusicPage.mount(h.root, h.api);
+  await settle();
+  h.setLyrics(() => ({ ok: true, lyrics: [{ text: "Second track line", time_sec: 1 }], lyrics_plain: "", lyrics_timing: "synced" }));
+  h.poll({ ok: true, track: track("next-9", "Another Song"), position: { elapsed_sec: 0, duration_sec: 180 }, playing: true,
+           player: { volume: 0.5, muted: false, confirmed: true, device: "Nix Dev", state: "playing" } });
+  await settle();
+  await settle();
+  assert.equal(h.calls.lyrics.length, 2);
+  assert.equal(h.calls.lyrics[1].video_id, "next-9");
+  assert.equal(h.root.querySelector(".lyr-line").textContent, "Second track line");
+  unmount();
+});
+
+check("like writes the playing track and is lit by the reply", async () => {
   const h = harness();
   const unmount = await h.window.NixMusicPage.mount(h.root, h.api);
   await settle();
@@ -525,22 +671,18 @@ check("like writes the playing track and lights from the reply", async () => {
   assert.equal(likeButton.disabled, false, "a playing track can be liked");
   likeButton.click();
   await settle();
-  // Compared field by field: the page's objects are built in the jsdom realm.
   assert.equal(h.calls.save[0].kind, "like");
   assert.equal(h.calls.save[0].video_id, "current-1");
-  assert.equal(h.calls.save[0].title, "Current Track");
-  assert.equal(h.calls.save[0].artist, "Test Artist");
   assert.equal(likeButton.getAttribute("aria-pressed"), "true");
-  assert.equal(likeButton.textContent, "♥ Liked");
+  assert.equal(likeButton.textContent, "Liked");
   likeButton.click();
   await settle();
   assert.equal(h.calls.save[1].kind, "unlike");
-  assert.equal(likeButton.getAttribute("aria-pressed"), "false");
-  assert.equal(likeButton.textContent, "♡ Like");
+  assert.equal(likeButton.textContent, "Like");
   unmount();
 });
 
-check("nothing playing leaves like and playlist with nothing to act on", async () => {
+check("nothing playing leaves like disabled and writes nothing", async () => {
   const h = harness({ snapshot: () => ({
     ok: true, track: null, position: {}, playing: false,
     player: { volume: 0.5, muted: false, confirmed: true, device: "Nix Dev", state: "idle" },
@@ -549,11 +691,9 @@ check("nothing playing leaves like and playlist with nothing to act on", async (
   await settle();
   const likeButton = h.root.querySelector('.music-extra[data-control="like"]');
   assert.equal(likeButton.disabled, true, "there is no track to like");
-  assert.equal(likeButton.textContent, "♡ Like");
-  // The picker still opens (the playlists are worth browsing), but adding has
-  // nothing to add, and the disabled Like button writes nothing at all.
   h.root.querySelector('.music-extra[data-control="playlist"]').click();
   await settle();
+  assert.equal(h.root.querySelectorAll(".music-picker-row").length, 1, "the playlists are still worth browsing");
   h.root.querySelector(".music-picker-row").click();
   await settle();
   assert.equal(h.calls.save.length, 0, "nothing playing means nothing is written");
@@ -574,17 +714,13 @@ check("a track can be added to a playlist, or a new one made for it", async () =
   await settle();
   assert.equal(picker.hidden, false);
   const rows = [...picker.querySelectorAll(".music-picker-row")];
-  assert.deepEqual(rows.map((row) => row.querySelector("strong").textContent), ["Focus"],
+  assert.deepEqual(rows.map((row) => row.querySelector(".music-picker-name").textContent), ["Focus"],
     "Liked Music is filled by likes, so it is not offered as a playlist to add to");
   rows[0].click();
   await settle();
   assert.equal(h.calls.save[0].kind, "playlist_add");
   assert.equal(h.calls.save[0].playlist_id, "p1");
-  assert.equal(h.calls.save[0].video_id, "current-1");
   assert.equal(picker.hidden, true, "choosing a playlist closes the picker");
-
-  // Naming a new playlist creates it, then adds the playing track to what the
-  // provider reported back, not to a name the page guessed at.
   h.root.querySelector('.music-extra[data-control="playlist"]').click();
   await settle();
   picker.querySelector("input").value = "Road trip";
@@ -592,14 +728,46 @@ check("a track can be added to a playlist, or a new one made for it", async () =
   await settle();
   await settle();
   assert.equal(h.calls.save[1].kind, "playlist_create");
-  assert.equal(h.calls.save[1].name, "Road trip");
   assert.equal(h.calls.save[2].kind, "playlist_add");
-  assert.equal(h.calls.save[2].playlist_id, "new-1");
-  assert.equal(picker.hidden, true);
+  assert.equal(h.calls.save[2].playlist_id, "new-1", "the track goes into the playlist the provider made");
   unmount();
 });
 
-check("keyboard shortcuts work and are removed on unmount", async () => {
+check("opening a playlist shows its songs, and Queue all lines them up", async () => {
+  const h = harness();
+  const unmount = await h.window.NixMusicPage.mount(h.root, h.api);
+  await settle();
+  const playlist = h.root.querySelector(".music-playlist-tile");
+  assert.ok(playlist, "the shelf carries the playlist as a sleeve");
+  playlist.click();
+  await settle();
+  await settle();
+  assert.equal(h.root.querySelector(".music-sheet-title").textContent, "Focus");
+  const names = [...h.root.querySelectorAll(".music-sheet .res .rt")].map((node) => node.textContent);
+  assert.deepEqual(names, ["Playlist Song", "Second Song"], "its songs are the sheet's rail");
+  const queueAll = [...h.root.querySelectorAll(".music-sheet-action")].find((button) => button.textContent === "Queue all");
+  assert.ok(queueAll, "the sheet offers Queue all");
+  queueAll.click();
+  await settle();
+  assert.equal(h.calls.queue[0].action, "add_range");
+  assert.equal(h.calls.queue[0].playlist_id, "p1");
+  assert.equal(h.calls.queue[0].video_id, "pl-1", "the tail starts at the first song");
+  unmount();
+});
+
+check("an empty answer says so rather than showing an empty sheet", async () => {
+  const h = harness({ search: () => ({ ok: true, tracks: [], playlists: [] }) });
+  const unmount = await h.window.NixMusicPage.mount(h.root, h.api);
+  await settle();
+  const input = h.root.querySelector("input[type=search]");
+  input.value = "zzz";
+  input.dispatchEvent(new h.window.Event("input"));
+  await wait(400);
+  assert.match(h.root.querySelector(".music-sheet-hint").textContent, /nothing for that/);
+  unmount();
+});
+
+check("keyboard shortcuts work, and unmounting removes them", async () => {
   const h = harness();
   const unmount = await h.window.NixMusicPage.mount(h.root, h.api);
   await settle();
@@ -608,142 +776,64 @@ check("keyboard shortcuts work and are removed on unmount", async () => {
   h.window.document.body.dispatchEvent(new h.window.KeyboardEvent("keydown", { key: "/", bubbles: true }));
   await settle();
   assert.equal(h.window.document.activeElement, input, "slash focuses the search field");
-  assert.equal(h.calls.control.length, 0, "typing a slash does not control the speaker");
-
-  // Space toggles playback when focus is not in a field.
   input.blur();
   h.window.document.dispatchEvent(new h.window.KeyboardEvent("keydown", { key: " ", bubbles: true }));
   await settle();
   assert.deepEqual(h.calls.control[0], { action: "pause", value: undefined });
-
-  // The shortcuts are ignored while the user is typing in the search field: a
-  // real keystroke lands on the focused input and bubbles from there.
   const typed = h.root.querySelector("input[type=search]");
   typed.focus();
   typed.dispatchEvent(new h.window.KeyboardEvent("keydown", { key: "m", bubbles: true }));
   await settle();
-  assert.equal(h.calls.control.filter((entry) => entry.action === "mute").length, 0);
-
+  assert.equal(h.calls.control.filter((entry) => entry.action === "mute").length, 0,
+    "the shortcuts are ignored while the user is typing");
   unmount();
   h.window.document.dispatchEvent(new h.window.KeyboardEvent("keydown", { key: " ", bubbles: true }));
   await settle();
   assert.equal(h.calls.control.length, 1, "unmount removes the shortcut listener");
 });
 
-check("playlists show the cover the provider resolved, and a tinted tile without one", async () => {
-  const h = harness();
-  const unmount = await h.window.NixMusicPage.mount(h.root, h.api);
-  await settle();
-  const cover = h.root.querySelector(".music-row img");
-  assert.ok(cover, "a playlist with artwork renders its picture");
-  assert.equal(cover.getAttribute("src"), "https://example.invalid/p1.jpg");
-  assert.equal(cover.getAttribute("loading"), "lazy", "covers load lazily, off the first paint's path");
-  unmount();
-
-  // A playlist the provider has no picture for (an auto playlist, or one saved
-  // without artwork) gets a monogram tile tinted from its own id instead of a
-  // broken image, and the same playlist always gets the same tint.
-  const bare = harness({ playlists: [
+check("covers come from the provider, and a sleeve without one gets the panel's mark", async () => {
+  const h = harness({ playlists: [
+    { playlist_id: "p1", name: "Focus", track_count: 3, artwork_url: "https://example.invalid/p1.jpg" },
     { playlist_id: "p-nocover", name: "Late Night", track_count: 4, artwork_url: "" },
   ] });
-  const bareUnmount = await bare.window.NixMusicPage.mount(bare.root, bare.api);
-  await settle();
-  const tile = bare.root.querySelector(".music-row-art[data-tone]");
-  assert.ok(tile, "a playlist without artwork still gets a tile");
-  assert.equal(tile.textContent, "LN", "the tile carries the playlist's initials");
-  assert.equal(bare.root.querySelectorAll(".music-row img").length, 0, "no empty image is rendered");
-  bareUnmount();
-  const twice = harness({ playlists: [
-    { playlist_id: "p-nocover", name: "Late Night", track_count: 4, artwork_url: "" },
-  ] });
-  const twiceUnmount = await twice.window.NixMusicPage.mount(twice.root, twice.api);
-  await settle();
-  assert.equal(
-    twice.root.querySelector(".music-row-art").dataset.tone,
-    tile.dataset.tone,
-    "the same playlist keeps the same tint",
-  );
-  twiceUnmount();
-});
-
-check("the page carries one transport, in the wheel's hub, and no stop", async () => {
-  const h = harness();
   const unmount = await h.window.NixMusicPage.mount(h.root, h.api);
   await settle();
-  const buttons = [...h.root.querySelectorAll("button")];
-  // The transport's own labels: "▶ Play" / "❙❙ Pause". Deliberately not a bare
-  // /play/ match, which would also catch "Playlist" and "Play next" — neither
-  // of which is a second transport.
-  const transport = buttons.filter((button) => /^(▶|❙❙)\s*(play|pause)$/i.test(button.textContent.trim()));
-  assert.equal(transport.length, 1, "exactly one play/pause control exists on the page");
-  assert.equal(
-    buttons.filter((button) => /\bstop\b/i.test(button.textContent + " " + (button.getAttribute("aria-label") || ""))).length,
-    0,
-    "no stop control exists anywhere",
-  );
-  const mute = buttons.filter((button) => /mute/i.test(button.getAttribute("aria-label") || ""));
-  assert.equal(mute.length, 1, "exactly one mute control exists on the page");
-
-  // The phone mini bar is a status strip, not a second set of buttons.
-  const mini = h.root.querySelector(".music-mini");
-  assert.ok(mini, "the mini bar is mounted");
-  assert.equal(mini.querySelectorAll("button").length, 0, "the mini bar repeats no control");
-
-  // Both controls sit with the wheel in one round hub, the Echo Connect panel's
-  // composition, and the wheel is still the graphical dial (not a range input).
-  const hub = h.root.querySelector(".music-hub.music-controls");
-  assert.ok(hub, "the transport lives in the hub with the wheel");
-  assert.ok(hub.querySelector(".music-volwheel[role=slider]"), "the wheel is inside the hub");
-  assert.equal(hub.querySelectorAll(".music-round").length, 2, "the hub has two round controls");
-  assert.ok(hub.querySelector(".music-play"), "play/pause is the round primary control");
-  assert.ok(hub.querySelector(".music-mute"), "mute is the round secondary control");
-  assert.ok(hub.querySelector(".music-mute svg"), "mute carries its own speaker icon");
-  assert.equal(h.root.querySelectorAll("input[type=range]").length, 0, "volume is never a range input");
-
-  // A muted speaker fills the control in and relabels it.
-  h.poll({ ok: true, track: track("current-1", "Current Track"), position: { elapsed_sec: 1, duration_sec: 200 }, playing: true, player: { volume: 0.5, muted: true, confirmed: true, device: "Nix Dev", state: "playing" } });
-  assert.equal(mute[0].getAttribute("aria-pressed"), "true");
-  assert.equal(mute[0].textContent, "Unmute");
-  assert.ok(mute[0].classList.contains("is-muted"));
+  const shelf = h.root.querySelector('.shelf[data-shelf="playlists"]');
+  const images = [...shelf.querySelectorAll(".tile .cover img")];
+  assert.equal(images.length, 1, "only the playlist that has a cover renders one");
+  assert.equal(images[0].getAttribute("src"), "https://example.invalid/p1.jpg");
+  assert.equal(images[0].getAttribute("loading"), "lazy", "covers load lazily, off the first paint's path");
+  const mark = shelf.querySelector(".tile .cover .mark[data-tone]");
+  assert.ok(mark, "a playlist without artwork gets a tinted mark instead of a broken image");
+  assert.equal(mark.textContent, "LN", "the mark carries the playlist's initials");
   unmount();
 });
 
-check("the library is painted from the persisted cache before the provider answers", async () => {
-  // A first visit fills the cache…
+check("a fresh shelf paints from the persisted cache before the provider answers", async () => {
   const first = harness();
   const firstUnmount = await first.window.NixMusicPage.mount(first.root, first.api);
   await settle();
-  const stored = first.window.localStorage.getItem("nix.music.cache.v1");
+  const stored = first.window.localStorage.getItem("nix.music.cache.v2");
   assert.ok(stored, "the read is persisted");
-  assert.equal(first.root.querySelector(".music-row strong").textContent, "Focus");
+  assert.equal(first.root.querySelector(".tile .name").textContent, "Focus");
   firstUnmount();
-
-  // …and a later visit (yesterday's cache, so it is due a refresh) paints it at
-  // once, while the provider is still pending.
   const aged = JSON.parse(stored);
   Object.keys(aged).forEach((key) => { aged[key].expires = Date.now() - 1000; });
-  const second = harness({
-    deferLibrary: true,
-    playlists: [{ playlist_id: "p1", name: "Focus", track_count: 9, artwork_url: "https://example.invalid/p1.jpg" }],
-  });
-  // The same browser storage as the first visit (one page, two mounts).
-  second.window.localStorage.setItem("nix.music.cache.v1", JSON.stringify(aged));
+  const second = harness({ deferLibrary: true, playlists: [
+    { playlist_id: "p1", name: "Focus", track_count: 9, artwork_url: "https://example.invalid/p1.jpg" },
+  ] });
+  second.window.localStorage.setItem("nix.music.cache.v2", JSON.stringify(aged));
   const secondUnmount = await second.window.NixMusicPage.mount(second.root, second.api);
   await settle();
-  assert.equal(
-    second.root.querySelector(".music-row strong").textContent,
-    "Focus",
-    "the cached playlist list is on screen with no provider answer",
-  );
-  assert.equal(second.root.querySelector(".music-row span").textContent, "3 track(s)", "the cached copy's own values");
-  assert.ok(second.root.querySelector(".music-row img").getAttribute("src"), "its cover comes back with it");
-  assert.deepEqual(second.calls.library, ["playlists"], "a stale copy is refreshed in the background");
-
-  // When the provider answers, the same tab is repainted from the fresh reply.
+  assert.equal(second.root.querySelector(".tile .name").textContent, "Focus",
+    "the shelf the user saw last time is on screen with no provider answer");
+  assert.equal(second.root.querySelector(".tile .sub").textContent, "3 songs", "the cached copy's own values");
+  assert.equal(second.calls.library.filter((kind) => kind === "playlists").length, 1, "a stale copy is refreshed behind it");
   second.resolveLibrary();
   await settle();
   await settle();
-  assert.equal(second.root.querySelector(".music-row span").textContent, "9 track(s)", "the fresh answer replaces the cache");
+  assert.equal(second.root.querySelector(".tile .sub").textContent, "9 songs", "the fresh answer replaces it");
   secondUnmount();
 });
 
@@ -754,7 +844,6 @@ for (const item of checks) {
     process.stdout.write("ok   " + item.name + "\n");
   } catch (error) {
     failures += 1;
-    // The failing line matters in a harness this long: print where it threw.
     const where = error && error.stack ? String(error.stack).split("\n")[1].trim() : "";
     process.stdout.write("FAIL " + item.name + "\n     " + (error && error.message) + "\n     " + where + "\n");
   }

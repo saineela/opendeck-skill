@@ -8,8 +8,11 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 import urllib.request
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SKILL_DIR = os.path.join(HERE, "..", "skills", "opendeck")
@@ -257,6 +260,45 @@ class WorkerTestCase(unittest.TestCase):
         self.assertEqual(result["lyrics_timing"], "none")
         self.assertEqual(result["count"], 0)
         self.assertIn("No lyrics", result["message"])
+
+    def test_lyrics_returns_the_words_the_provider_has_without_timings(self):
+        """A plain-only match is an answer: the words, not "no lyrics".
+
+        LRCLIB has timings for only part of its catalog. Discarding an entry that
+        has words but no stamps threw away the answer for every one of those
+        tracks, so the page said "no lyrics are available" about a song whose
+        words the provider was holding.
+        """
+        result = self.execute({"action": "lyrics", "title": "Words Alone", "artist": "The Testers", "duration_sec": 200})
+        self.assertEqual(result["lyrics_timing"], "plain")
+        self.assertEqual(result["lyrics"], [])
+        self.assertEqual(result["lyrics_plain"], "These are the words\nof a plain song")
+        self.assertEqual(result["lyrics_source"], "LRCLIB")
+
+    def test_lyrics_picks_this_track_out_of_a_search_of_others(self):
+        """Name and length decide, not the order the provider returned them in.
+
+        The fake answers a search for "Words Alone" with a same-length entry for
+        a different song (before the right one) and with a live take of the right
+        name whose length gives it away. Taking the first entry whose words could
+        be parsed put another song's timings on screen, marked as a success.
+        """
+        result = self.execute({"action": "lyrics", "title": "Words Alone", "artist": "The Testers", "duration_sec": 200})
+        self.assertNotIn("different song's words", result["lyrics_plain"])
+        self.assertEqual(result["lyrics"], [], "the decoy's timings must not be shown")
+        searches = [item for item in self.fake.catalog_requests()
+                    if "lrclib.net" in item["inner_url"] and "/api/search" in item["inner_url"]]
+        self.assertTrue(searches, "a plain-only exact match still gets a search behind it")
+
+    def test_lyrics_named_by_id_resolves_the_track_it_names(self):
+        """A video id alone is resolved, and the name it resolves to is looked up."""
+        result = self.execute({"action": "lyrics", "video_id": "lYBUbBu4W08"})
+        lookups = [item for item in self.fake.catalog_requests() if "lrclib.net" in item["inner_url"]]
+        self.assertIn("track_name=Never+Gonna+Give+You+Up", lookups[0]["inner_url"])
+        # The length the player reported travels with the lookup: the provider's
+        # exact endpoint needs it, and it is what rejects another song's words.
+        self.assertIn("duration=214", lookups[0]["inner_url"])
+        self.assertEqual(result["lyrics_timing"], "none")
 
     def test_lyrics_parser_ignores_metadata_and_sorts(self):
         parsed = OpenDeckService.parse_synced_lyrics("[00:10.00] second\nnot a line\n[00:05.50] first\n[ar:Queen]\n[00:12.00] third")
@@ -1120,6 +1162,269 @@ class WorkerTestCase(unittest.TestCase):
             service._arguments("make me a playlist called Late Night on OpenDeck"),
             {"action": "save", "kind": "playlist_create", "name": "Late Night"},
         )
+
+
+class FakeQueueService:
+    """The independent queue service, as the worker talks to it.
+
+    The real one is nix_core/music_queue_service.py; this answers its routes
+    with the shape of its replies, so the worker's forwarding is checked against
+    the contract rather than against that service's own implementation.
+    """
+
+    def __init__(self) -> None:
+        self.items: list[dict] = []
+        self.index = -1
+        self.shuffle = False
+        self.repeat = "off"
+        self.calls: list[tuple[str, dict]] = []
+        self.limits: dict = {}
+        service = self
+
+        class Handler(SimpleHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def log_message(self, *args):  # the tests are quiet on purpose
+                pass
+
+            def _reply(self, payload: dict) -> None:
+                body = json.dumps(payload).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def _state(self) -> dict:
+                return {
+                    "ok": True, "queue": list(service.items), "offset": 0,
+                    "count": len(service.items), "total": len(service.items),
+                    "index": service.index, "shuffle": service.shuffle,
+                    "repeat": service.repeat, "revision": len(service.calls),
+                    "unchanged": False,
+                }
+
+            def do_GET(self):  # noqa: N802
+                path = self.path.split("?")[0]
+                service.calls.append(("GET " + path, {}))
+                if path == "/state":
+                    return self._reply(self._state())
+                if path == "/pending":
+                    return self._reply({"ok": True, "pending": []})
+                return self._reply({"ok": False, "error": "not found"})
+
+            def do_POST(self):  # noqa: N802
+                length = int(self.headers.get("Content-Length") or 0)
+                body = json.loads(self.rfile.read(length) or b"{}")
+                path = self.path.split("?")[0]
+                service.calls.append(("POST " + path, body))
+                if path == "/add":
+                    for track in body.get("tracks") or []:
+                        service.items.append({
+                            "video_id": track["video_id"], "title": track.get("title", ""),
+                            "artist": track.get("artist", ""), "album": track.get("album", ""),
+                            "duration_sec": track.get("duration_sec", 0),
+                            "artwork_url": track.get("artwork_url", ""),
+                        })
+                    return self._reply({"ok": True, "accepted": len(body.get("tracks") or []),
+                                        "refused": 0, "total": len(service.items),
+                                        "revision": len(service.calls)})
+                if path == "/limits":
+                    service.limits = body.get("limits") or {}
+                    return self._reply({"ok": True, "limits": service.limits})
+                if path == "/ops":
+                    return self._reply(service.op(body))
+                return self._reply({"ok": False, "error": "not found"})
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    @property
+    def url(self) -> str:
+        return "http://127.0.0.1:%d" % self.server.server_address[1]
+
+    def op(self, body: dict) -> dict:
+        op = body.get("op")
+        index = body.get("index")
+        if op == "set_index":
+            self.index = index
+            return {"ok": True, "index": index, "total": len(self.items)}
+        if op == "next":
+            if self.index + 1 >= len(self.items):
+                return {"ok": False, "code": "queue_end", "total": len(self.items),
+                        "index": self.index, "message": "The queue has no next track to play."}
+            self.index += 1
+            return {"ok": True, "index": self.index, "total": len(self.items),
+                    "track": self.items[self.index], "repeat": self.repeat, "shuffle": self.shuffle}
+        if op == "remove":
+            removed = self.items.pop(index)
+            return {"ok": True, "total": len(self.items), "index": -1,
+                    "message": "Removed %s." % removed["video_id"]}
+        if op == "front":
+            self.items.insert(0, self.items.pop(index))
+            return {"ok": True, "total": len(self.items), "index": self.index, "position": 0}
+        if op == "shuffle":
+            self.shuffle = bool(body.get("on", not self.shuffle))
+            return {"ok": True, "shuffle": self.shuffle, "total": len(self.items)}
+        if op == "repeat":
+            self.repeat = body.get("mode", "off")
+            return {"ok": True, "repeat": self.repeat, "total": len(self.items)}
+        if op == "clear":
+            self.items = []
+            self.index = -1
+            return {"ok": True, "total": 0, "index": -1}
+        return {"ok": False, "error": "unknown op"}
+
+    def close(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+
+
+class QueueServiceForwardingTestCase(unittest.TestCase):
+    """The worker with an independent queue service behind it.
+
+    Setting NIX_MUSIC_QUEUE_URL makes the service the queue: the worker forwards
+    the assistant's own queue requests there, so the page and the assistant are
+    reading one line-up — and the worker's JSON file is no longer it. This case
+    deliberately does not inherit the local-queue tests: with a service behind
+    it there is no local queue to exercise, and the same requests are checked
+    above against the worker's own.
+    """
+
+    def setUp(self) -> None:
+        self.fake = FakeOpenDeck()
+        self.fake.__enter__()
+        self.addCleanup(self.fake.__exit__, None, None, None)
+        self.service = OpenDeckService()
+        self.service.initialize({"server_url": self.fake.base_url, "api_key": API_KEY})
+        for path in (
+            opendeck_worker.NOW_PLAYING_FILE,
+            opendeck_worker.QUEUE_FILE,
+            opendeck_worker.LIBRARY_CACHE_FILE,
+        ):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+        self.queue_service = FakeQueueService()
+        self.addCleanup(self.queue_service.close)
+        patcher = mock.patch.object(opendeck_worker, "QUEUE_SERVICE_URL", self.queue_service.url)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def seed_queue(self, titles: list[str], *, current_index: int = -1) -> None:
+        with open(opendeck_worker.QUEUE_FILE, "w", encoding="utf-8") as handle:
+            json.dump({"items": [
+                {"video_id": "file%07d" % index, "title": title, "artist": "", "album": "",
+                 "duration_sec": 0, "artwork_url": ""} for index, title in enumerate(titles)
+            ], "current_index": current_index}, handle)
+
+    def execute(self, arguments: dict) -> dict:
+        validated = OpenDeckService._validate_tool_arguments(arguments)
+        assert_schema(validated, INPUT_SCHEMA, "arguments")
+        response = asyncio.run(
+            self.service.handle("execute", {"tool": "opendeck_music", "arguments": validated})
+        )
+        result = response["result"]
+        assert_schema(result, RESULT_SCHEMA, "result")
+        return result
+
+    def test_the_assistant_reads_the_service_s_queue_not_the_worker_s_file(self):
+        # A queue in the worker's own file, and a different one in the service:
+        # the service is what is reported, because it is what is playing.
+        self.seed_queue(["Only In The File"])
+        self.queue_service.items = [
+            {"video_id": "svc0000001", "title": "From The Service", "artist": "A",
+             "album": "", "duration_sec": 200, "artwork_url": ""},
+        ]
+        self.queue_service.index = 0
+        result = self.execute({"action": "queue", "op": "list"})
+        self.assertEqual([item["title"] for item in result["queue"]], ["From The Service"])
+        self.assertEqual(result["queue_index"], 0)
+        self.assertEqual(result["count"], 1)
+        self.assertIn("/state", self.queue_service.calls[0][0])
+
+    def test_queueing_by_name_resolves_through_the_provider_then_writes_to_the_service(self):
+        # The provider is still what knows a song by its name; the service is
+        # what holds the line-up. Both are reached, once each.
+        result = self.execute({"action": "queue", "op": "add", "query": "Never Gonna Give You Up"})
+        # The id is the provider's own answer for that name, and it is what the
+        # service was handed — the worker did not invent a track of its own.
+        self.assertEqual(self.queue_service.items[0]["video_id"], result["video_id"])
+        self.assertEqual(self.queue_service.items[0]["title"], "Never Gonna Give You Up")
+        self.assertIn("Never Gonna Give You Up", result["message"])
+        adds = [body for name, body in self.queue_service.calls if name == "POST /add"]
+        self.assertEqual(len(adds), 1, "one write, not one per field")
+
+    def test_a_skip_plays_the_track_the_service_handed_over(self):
+        self.queue_service.items = [
+            {"video_id": "dQw4w9WgXcQ", "title": "Never Gonna Give You Up", "artist": "Rick Astley",
+             "album": "", "duration_sec": 214, "artwork_url": ""},
+        ]
+        self.queue_service.index = -1
+        result = self.execute({"action": "queue", "op": "next"})
+        self.assertTrue(result["play_url"], "the provider resolved a stream URL for it")
+        self.assertEqual(result["video_id"], "dQw4w9WgXcQ")
+        self.assertEqual(result["queue_index"], 0)
+        self.assertIn("Playing queued track 1 of 1", result["message"])
+        # The queue itself is the service's, and it is what moved.
+        self.assertEqual(self.queue_service.index, 0)
+
+    def test_a_track_named_instead_of_numbered_is_found_in_the_service(self):
+        self.queue_service.items = [
+            {"video_id": "dQw4w9WgXcQ", "title": "Never Gonna Give You Up", "artist": "Rick Astley",
+             "album": "", "duration_sec": 214, "artwork_url": ""},
+            {"video_id": "abc12345678", "title": "Another Song", "artist": "Someone",
+             "album": "", "duration_sec": 200, "artwork_url": ""},
+        ]
+        self.execute({"action": "queue", "op": "remove", "query": "Never Gonna Give You Up"})
+        removes = [body for name, body in self.queue_service.calls if name == "POST /ops"]
+        self.assertEqual([body["index"] for body in removes if body["op"] == "remove"], [0],
+                         "the name was resolved to the position the service holds it at")
+        self.assertEqual([item["title"] for item in self.queue_service.items], ["Another Song"])
+
+    def test_the_worker_leaves_its_own_queue_file_untouched(self):
+        self.seed_queue(["Only In The File"])
+        self.execute({"action": "queue", "op": "add", "query": "Never Gonna Give You Up"})
+        with open(opendeck_worker.QUEUE_FILE, "r", encoding="utf-8") as handle:
+            saved = json.load(handle)
+        self.assertEqual([item["title"] for item in saved["items"]], ["Only In The File"],
+                         "the service owns the queue, so the file is not a second one")
+
+    def test_the_address_published_in_the_data_directory_is_found(self):
+        """NIX starts a skill worker with almost no environment on purpose, so
+        the queue service's published address is how a worker finds it."""
+        published = os.path.join(tempfile.gettempdir(), "opendeck-test-queue-service-%d.json" % os.getpid())
+        self.addCleanup(lambda: os.path.exists(published) and os.remove(published))
+        with mock.patch.object(opendeck_worker, "QUEUE_SERVICE_URL", ""), \
+                mock.patch.object(opendeck_worker, "QUEUE_SERVICE_FILE", published):
+            self.assertEqual(opendeck_worker._queue_service_address(), ("", ""),
+                             "nothing published yet, so there is no queue service")
+            with open(published, "w", encoding="utf-8") as handle:
+                json.dump({"url": self.queue_service.url + "/", "token": "secret", "at": 1}, handle)
+            self.assertEqual(opendeck_worker._queue_service_address(),
+                             (self.queue_service.url, "secret"))
+
+    def test_a_published_address_is_the_queue_the_worker_uses(self):
+        published = os.path.join(tempfile.gettempdir(), "opendeck-test-queue-service-%d.json" % os.getpid())
+        self.addCleanup(lambda: os.path.exists(published) and os.remove(published))
+        with open(published, "w", encoding="utf-8") as handle:
+            json.dump({"url": self.queue_service.url, "token": "", "at": 1}, handle)
+        with mock.patch.object(opendeck_worker, "QUEUE_SERVICE_URL", ""), \
+                mock.patch.object(opendeck_worker, "QUEUE_SERVICE_FILE", published):
+            self.seed_queue(["Only In The File"])
+            self.queue_service.items = [
+                {"video_id": "published01", "title": "From The Published Queue", "artist": "",
+                 "album": "", "duration_sec": 0, "artwork_url": ""},
+            ]
+            result = self.execute({"action": "queue", "op": "list"})
+        self.assertEqual([item["title"] for item in result["queue"]], ["From The Published Queue"])
+
+    def test_a_queue_service_that_is_not_there_is_reported_rather_than_guessed_at(self):
+        with mock.patch.object(opendeck_worker, "QUEUE_SERVICE_URL", "http://127.0.0.1:1"):
+            with self.assertRaises(RuntimeError) as failure:
+                self.service.queue({"op": "list"})
+        self.assertIn("not reachable", str(failure.exception).lower())
 
 
 class WorkerProtocolTestCase(unittest.TestCase):

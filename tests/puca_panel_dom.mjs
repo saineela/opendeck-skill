@@ -2320,6 +2320,62 @@ check("the wall's own page and type come from the box, not from the internet", a
   }
 });
 
+check("the floating playbar keeps the track on the wall when the card is away", async () => {
+  // The card carries the player and the column carries the card away; the
+  // results sheet covers the wall outright. What is playing is not part of
+  // either, so a strip of its own keeps the name (and three controls) in sight
+  // — and stays hidden while the card itself is on screen, because two players
+  // showing the same song is one too many.
+  // `?lyrics=0` keeps the words from taking the wall by themselves: the strip
+  // yields to them, so they are opened by hand further down instead.
+  const h = harness({ track: track("v1", "First Song"), playing: true, position: 40,
+    url: "http://localhost:49170/?lyrics=0" });
+  await h.settle();
+  const bar = h.el("#minibar");
+  assert.ok(bar, "the strip is part of the page it ships with");
+  assert.equal(h.text("#miniTitle"), "First Song", "and it carries the track's name");
+  assert.equal(bar.hidden, true, "while the card is on screen the strip stays out of the way");
+
+  const column = h.el(".left");
+  column.scrollTop = 200;
+  column.dispatchEvent(new h.window.Event("scroll"));
+  await h.settle();
+  assert.equal(bar.hidden, false, "the card scrolled away, so the strip takes over");
+  assert.equal(h.text("#miniTitle"), "First Song");
+  assert.equal(h.text("#miniArtist"), "Test Artist");
+  assert.equal(bar.classList.contains("playing"), true, "and it knows the speaker is playing");
+
+  // The strip's controls are the card's own commands: one player, two views.
+  const queued = h.calls.queue.length;
+  h.click("#miniNext");
+  await h.settle();
+  assert.deepEqual(plain(h.calls.queue.at(-1)), { action: "next" },
+    "the strip's next is the queue's own skip");
+  assert.ok(h.calls.queue.length > queued);
+  const controlled = h.calls.control.length;
+  h.click("#miniPlay");
+  await h.settle();
+  assert.ok(h.calls.control.length > controlled, "and its play button is the card's transport");
+  assert.equal(h.calls.failed, 0, "every route the strip asked for is one the console serves");
+
+  // Tapping the strip is a request for the card back, not a play command.
+  h.click("#miniStrip");
+  await h.settle();
+  assert.equal(column.scrollTop, 0, "the strip brings the card back");
+  assert.equal(bar.hidden, true, "and steps aside again once it has");
+
+  // The lyrics carry the words and their own transport, so the strip yields to
+  // them rather than drawing a second player over the words.
+  column.scrollTop = 200;
+  column.dispatchEvent(new h.window.Event("scroll"));
+  await h.settle();
+  assert.equal(bar.hidden, false);
+  h.click("#btnLyrics");
+  await h.settle();
+  assert.equal(bar.hidden, true, "the words take the wall, and the strip yields to them");
+  h.unmount();
+});
+
 /* ── runner ──────────────────────────────────────────────────────────────── */
 
 let failed = 0;

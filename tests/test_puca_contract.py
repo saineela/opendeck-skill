@@ -160,63 +160,68 @@ class PucaContractTestCase(unittest.TestCase):
     def test_music_page_coalesces_rapid_volume_changes(self):
         """The page must send the level the user settled on, not one request per tap.
 
-        Dragging the dial or tapping the stepper previews locally and commits at
-        most one control request at a time, so a burst of clicks cannot pile up
-        requests (or report a failure for a level that was already replaced).
+        The panel's slider previews locally and commits at most one control
+        request at a time, so a burst of drags or wheel steps cannot pile up
+        requests (or report a failure for a level that was already replaced): the
+        gesture settles, and what it settled on is what is sent.
         """
         with open(os.path.join(SKILL_DIR, "ui", "music.js"), encoding="utf-8") as handle:
             script = handle.read()
         self.assertIn("window.NixMusicPage = { mount: mount };", script)
-        self.assertIn("let volumeInFlight = false;", script)
-        self.assertIn("let volumePending = false;", script)
-        self.assertIn("if (volumeInFlight) { volumePending = true; return; }", script)
-        self.assertIn("if (volumePending) commitVolume();", script)
-        # The graphical dial replaces the range input: a settled drag and a
-        # settled stepper both funnel through the same coalescing commit.
-        self.assertIn('volWheel.addEventListener("pointerup", function () {', script)
-        self.assertIn('volUp.addEventListener("click", function () { nudgeVolume(VOLUME_STEP); });', script)
+        self.assertIn("if (state.volumeInFlight) { state.volumePending = true; return; }", script)
+        self.assertIn("state.volumeInFlight = true;", script)
+        self.assertIn("if (state.volumePending) commitVolume();", script)
+        # One slider, three gestures: a pointer drag and the arrow keys preview
+        # and commit, and a wheel step settles on the same 280ms timer, so the
+        # level sent is always the last one the user chose.
+        self.assertIn("function volFromPointer(event)", script)
+        self.assertIn("function previewVolume(level)", script)
+        self.assertIn("function settleVolume(ms)", script)
+        self.assertIn('volSlider.addEventListener("pointerup", function () {', script)
         self.assertIn("settleVolume(280);", script)
+        # The graphical slider replaces a range input, whose own value would
+        # paint over the level that is still in flight.
         self.assertNotIn('input[type="range"]', script)
         self.assertNotIn("volumeSlider", script)
 
     def test_music_page_has_a_queue_without_a_separate_pause_or_stop(self):
-        """One transport, inside the wheel's hub; queueing is its own action.
+        """One transport, one mute control, and a queue the assistant can fill.
 
-        The play/pause toggle is the whole transport — a second Pause button
-        repeated it and a Stop button only meant "pause a moment" — and it sits
-        in the same round control hub as the volume wheel, so the page shows one
-        play/pause control and one mute control and nothing else. A queue the
-        assistant can fill is its own card, with an add control beside each row
-        (a sibling, never nested inside the row button).
+        The play/pause control is the whole transport — a second Pause button
+        repeated it and a Stop button only ever meant "pause a moment" — and the
+        mute control is the speaker's own, so the page shows exactly one of each.
+        A queue the assistant can fill is its own card beside the player, and
+        each sleeve carries its own add control as a *sibling*, never inside the
+        tile: one button inside another swallows the tap.
         """
         with open(os.path.join(SKILL_DIR, "ui", "music.js"), encoding="utf-8") as handle:
             script = handle.read()
-        self.assertIn('const hub = element("div", "music-hub music-controls");', script)
-        self.assertIn("hub.append(playButton, volWheel, muteButton);", script)
+        self.assertIn('const playButton = element("button", "round play music-play");', script)
+        self.assertIn('const muteButton = element("button", "vol music-mute");', script)
+        # The transport is driven from the snapshot the speaker reports, so
+        # there is no second play control and nothing to stop.
         self.assertNotIn("pauseButton", script)
         self.assertNotIn("stopButton", script)
-        # The phone mini bar leads back to the hub instead of repeating its
-        # controls, and the mute button is a round control of the same family.
-        self.assertNotIn("miniToggle", script)
-        self.assertNotIn("miniMute", script)
-        self.assertIn('element("button", "music-round music-mute")', script)
-        self.assertIn('muteButton.append(speakerGlyph(), element("span", "music-round-label", "Mute"));', script)
-        self.assertIn("const queueCard = element(\"section\", \"music-card music-queue-card\");", script)
+        self.assertIn('const side = element("section", "side music-queue-card");', script)
         self.assertIn("function renderQueue(payload)", script)
         self.assertIn('api.post("/queue", { action: "add", video_id: track.video_id })', script)
         self.assertIn('api.post("/queue", { action: "next" })', script)
-        self.assertIn('wrap.append(row, queueButton);', script)
+        self.assertIn('api.post("/queue", { action: "remove", index: index })', script)
+        self.assertIn('api.post("/queue", { action: "clear" })', script)
+        self.assertIn("wrap.append(tile, queueButton);", script)
 
     def test_music_page_reorders_the_queue_by_dragging_a_row(self):
-        """The queue is arranged by dragging, and it sits under the player.
+        """The queue is arranged by dragging, and it sits beside the player.
 
         A queue the assistant fills is only half a queue if the user cannot
         rearrange it: each row is carried by a pointer, the drop position is
         drawn before the row is released, and the whole arrangement is one
         `move` call to the provider. The gesture is a pointer drag rather than
         HTML5 drag-and-drop, because `dragstart` never fires for a finger in the
-        phone webview this page runs in. The card itself belongs to the player's
-        column, directly under the now-playing card.
+        phone webview this page runs in. The card is the column beside the
+        player — the wall display's own shape, which this page is the desk-size
+        copy of — and on a narrow screen the page becomes the scroller and the
+        card moves to where a thumb can still reach it.
         """
         with open(os.path.join(SKILL_DIR, "ui", "music.js"), encoding="utf-8") as handle:
             script = handle.read()
@@ -232,27 +237,28 @@ class PucaContractTestCase(unittest.TestCase):
             self.assertIn(f'queueList.addEventListener("{event}"', script)
         # Nothing about the gesture depends on HTML5 drag-and-drop, which never
         # fires from touch, so no row carries `draggable` or its events.
-        self.assertNotIn("row.draggable", script)
+        self.assertNotIn("draggable", script)
         for event in ("dragstart", "dragover", "dragend"):
-            self.assertNotIn(f'{event}"', script)
+            self.assertNotIn(event, script)
         self.assertIn('queueDrag.row.classList.add("is-dragging");', script)
         self.assertIn('rows[rows.length - 1].classList.add("is-drop-after");', script)
         self.assertIn('rows[slot].classList.add("is-drop-before");', script)
         # A finger has to be able to start the drag without scrolling the list,
         # so the row carries a grip whose own touch-action keeps the gesture.
         self.assertIn('element("span", "music-queue-grip"', script)
-        self.assertIn('row.append(grip, play, artNode(item.artwork_url, "♪"), copy, end);', script)
-        # The queue is the column beside the player — the wall display's own
-        # shape, which this page is the desk-size copy of — and it goes back
-        # under the player on a narrow screen. The four cards are the grid's own
-        # children and the stylesheet places them by name, so neither direction
-        # needs the markup to be nested one way.
-        self.assertIn("grid.append(nowCard, queueCard, browseCard, lyricsCard);", script)
+        self.assertIn("row.append(grip, cover, copy, end);", script)
+        # The queue is the grid's own second column, and the stylesheet places
+        # it — beside the player on a desk, above it on a phone — so neither
+        # direction depends on how the markup is nested.
+        self.assertIn("grid.append(left, side);", script)
         with open(os.path.join(SKILL_DIR, "ui", "music.css"), encoding="utf-8") as handle:
             styles = handle.read()
-        self.assertIn('"player queue"', styles, styles[:400])
-        self.assertIn(".music-app .music-queue-card { grid-area: queue; }", styles)
-        self.assertIn('"player"\n      "queue"', styles, "the queue drops under the player on a phone")
+        self.assertIn("grid-template-columns: minmax(0, 1fr) minmax(240px, 24vw);", styles)
+        self.assertIn("position: sticky; top: var(--gap);", styles)
+        self.assertIn(".music-app .grid { grid-template-columns: minmax(0, 1fr); }", styles,
+                      "one column: on a phone the page is the scroller")
+        self.assertIn("cursor: grabbing;", styles)
+        self.assertIn("touch-action: none;", styles)
 
     def test_music_page_keeps_the_lyrics_on_the_current_line(self):
         """The lyric box must scroll to the active line, not past it.
@@ -268,27 +274,27 @@ class PucaContractTestCase(unittest.TestCase):
         """
         with open(os.path.join(SKILL_DIR, "ui", "music.js"), encoding="utf-8") as handle:
             script = handle.read()
-        self.assertIn("lyricsBox.getBoundingClientRect()", script)
-        self.assertIn("line.getBoundingClientRect()", script)
-        self.assertIn("Math.min(target, lyricsBox.scrollHeight - lyricsBox.clientHeight)", script)
-        self.assertIn("lyricTarget = lyricTop(activeLine);", script)
-        self.assertIn("lyricFrame = lyricRequest(step);", script)
-        self.assertIn('if (typeof raf !== "function" || lyricFrameStalled) {', script)
+        self.assertIn("const box = lyrScroller.getBoundingClientRect();", script)
+        self.assertIn("const rect = line.getBoundingClientRect();", script)
+        self.assertIn("Math.min(target, lyrScroller.scrollHeight - lyrScroller.clientHeight)", script)
+        self.assertIn("state.lyricTarget = lyricTop(state.activeLine);", script)
+        self.assertIn("state.lyricFrame = lyricRequest(step);", script)
+        self.assertIn('if (typeof raf !== "function" || state.lyricFrameStalled) {', script)
         self.assertIn("settleLyrics();", script)
-        self.assertIn("lyricsBox.scrollTop = 0;", script)
+        self.assertIn("lyrScroller.scrollTop = 0;", script)
         self.assertNotIn("activeLine.offsetTop", script)
         self.assertNotIn('behavior: "smooth"', script)
 
     def test_music_page_styles_are_scoped_and_responsive(self):
-        """The page stylesheet adapts to the screen and never leaks out of its mount.
+        """The panel's stylesheet, scoped to the page, is the page's whole layout.
 
         The console appends this file to a shared dashboard, so an unscoped
         selector would restyle the whole console; every rule must stay inside
-        .music-app. The layout itself has to work on a phone without JavaScript
-        measuring the viewport: fluid type, one column below 1080px, tap targets
-        of at least 44px, a scrolling chip row, list scrolling handed back to the
-        page on phones, a safe-area-aware sticky mini bar, and a reduced-motion
-        path.
+        .music-app. The design is the panel's own: sizes are a floor, a share of
+        the glass and a ceiling, so the page needs no breakpoint to stay readable
+        and no JavaScript to measure the viewport. On a narrow screen the grid
+        folds to one column and the page — never a nested scroller — is what
+        scrolls, and there is a reduced-motion path.
         """
         with open(os.path.join(SKILL_DIR, "ui", "music.css"), encoding="utf-8") as handle:
             styles = handle.read()
@@ -299,34 +305,38 @@ class PucaContractTestCase(unittest.TestCase):
             self.assertIn(".music-app", selector, selector)
 
         for query in (
-            "@media (max-width: 1080px)",
-            "@media (max-width: 760px)",
-            "@media (max-width: 520px)",
-            "@media (hover: hover)",
+            "@media (max-width: 900px)",
+            "@media (max-width: 620px)",
+            "@media (hover: none)",
             "@media (prefers-reduced-motion: reduce)",
         ):
             self.assertIn(query, styles)
 
+        # Fluid sizing, with a floor under the controls a thumb lands on.
         self.assertIn("clamp(", styles)
-        self.assertIn("aspect-ratio: 1 / 1", styles)
-        self.assertIn("min-height: 44px", styles)
+        self.assertIn("aspect-ratio: 1", styles)
+        self.assertIn("width: clamp(52px, 4.48vw, 87px); aspect-ratio: 1;", styles)
+        # The shelves and the sheet are rails that slide sideways.
         self.assertIn("overflow-x: auto", styles)
-        self.assertIn("-webkit-overflow-scrolling: touch", styles)
-        self.assertIn("content-visibility: auto", styles)
-        self.assertIn("env(safe-area-inset-bottom", styles)
-        self.assertIn(".music-app .music-mini", styles)
+        self.assertIn("scroll-snap-type", styles)
+        # The queue card is the page's own column while there is room for it.
+        self.assertIn("grid-template-columns: minmax(0, 1fr) minmax(240px, 24vw);", styles)
+        self.assertIn("position: sticky; top: var(--gap);", styles)
         # A nested scroll container under a nested scroll container is what makes
-        # a phone page feel stuck; the list becomes plain page scrolling instead.
-        self.assertIn(".music-app .music-list { max-height: none; overflow-y: visible; }", styles)
+        # a phone page feel stuck; there the page itself scrolls instead.
+        self.assertIn(".music-app .grid { grid-template-columns: minmax(0, 1fr); }", styles)
+        self.assertIn(".music-app .side {\n    position: static; max-height: none;", styles)
+        self.assertIn("animation: none !important;", styles)
 
     def test_music_page_answers_a_tap_without_waiting_for_the_speaker(self):
         """Typing, tapping and volume changes must feel instant.
 
-        A tap marks the row pending before the request is sent, already-fetched
-        results come back from a short-lived cache with no spinner, typing is
-        debounced and a superseded search is aborted instead of racing the newer
-        one, and after an action the 13ms snapshot endpoint is polled at 260ms
-        until the speaker agrees rather than waiting for the shell's slow poll.
+        A tap marks the sleeve it came from pending before the request is sent
+        and the sheet paints its skeleton at once, already-fetched results come
+        back from a short-lived cache with no spinner, typing is debounced and a
+        superseded search is aborted instead of racing the newer one, and after
+        an action the cheap snapshot endpoint is re-read every 260ms until the
+        speaker agrees rather than waiting for the shell's slow poll.
         """
         with open(os.path.join(SKILL_DIR, "ui", "music.js"), encoding="utf-8") as handle:
             script = handle.read()
@@ -334,14 +344,18 @@ class PucaContractTestCase(unittest.TestCase):
         self.assertIn("const SEARCH_DEBOUNCE_MS = 280;", script)
         self.assertIn("state.searchTimer = window.setTimeout(fire, SEARCH_DEBOUNCE_MS);", script)
         self.assertIn("new AbortController()", script)
-        self.assertIn('error.name === "AbortError"', script)
-        self.assertIn("cacheRead(cacheKey, SEARCH_TTL_MS)", script)
-        self.assertIn("cacheWrite(cacheKey, payload, SEARCH_TTL_MS)", script)
+        self.assertIn('error && error.name === "AbortError"', script)
+        self.assertIn("cacheRead(key, SEARCH_TTL_MS)", script)
+        self.assertIn("cacheWrite(key, payload, SEARCH_TTL_MS)", script)
         self.assertIn("const LIBRARY_TTL_MS = 20_000;", script)
-        self.assertIn('row.classList.add("is-pending")', script)
+        # The tap is acknowledged on the sleeve it came from, and the answer has
+        # somewhere to land before the provider has replied.
+        self.assertIn('if (node) node.classList.add("is-pending");', script)
+        self.assertIn('element("div", "music-skeleton")', script)
+        self.assertIn("sheetOpen(true);", script)
         self.assertIn("const CONFIRM_DELAY_MS = 260;", script)
         self.assertIn("function followUp(videoId)", script)
-        self.assertIn("mini.hidden = false;", script)
+        self.assertIn("state.confirmTimers.push(window.setTimeout(step, CONFIRM_DELAY_MS));", script)
         self.assertIn('if (event.key === "/")', script)
         # Superseded work is dropped, not queued: the in-flight search and the
         # confirmation loop are both cancelled when the page unmounts.

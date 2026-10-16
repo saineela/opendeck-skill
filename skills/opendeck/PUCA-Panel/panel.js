@@ -1033,6 +1033,57 @@
       lyrBg.style.background = coverRadial(hue, .55);
     }
     markPlayingTiles();
+    renderMinibar();
+  }
+
+  /* ======================================================================
+     THE FLOATING PLAYBAR
+
+     The card carries the player, and the card goes away: the column scrolls
+     it out of sight, and the results sheet covers the whole wall. What is
+     playing is not part of either, so a small strip keeps the name — and the
+     three controls that matter — on the wall while the card is elsewhere. It
+     steps aside for the lyrics on purpose: those carry the words and their own
+     scrub bar already.
+     ====================================================================== */
+  var minibar = $('#minibar'), miniArt = $('#miniArt'), miniTitle = $('#miniTitle'),
+      miniArtist = $('#miniArtist'), miniTimes = $('#miniTimes'), miniFill = $('#miniFill');
+
+  function minibarWanted() {
+    if (!S.nowPlaying) return false;
+    if (lyricsOpen) return false;
+    if (!resultsSheet.hidden) return true;
+    return Boolean(columnEl && columnEl.scrollTop > 40);
+  }
+
+  function renderMinibar() {
+    if (!minibar) return;
+    var np = S.nowPlaying;
+    // The strip is filled whether or not it is on screen, so it is already
+    // showing the right song at the moment the card leaves rather than one
+    // paint later.
+    minibar.classList.toggle('playing', Boolean(np && np.playing));
+    miniTitle.textContent = np ? np.title : '';
+    miniArtist.textContent = np ? np.artist : '';
+    if (np && np.art) {
+      miniArt.innerHTML = '<img alt="" src="' + esc(np.art) + '" />';
+    } else {
+      miniArt.textContent = np ? artMark(np) : '♪';
+    }
+    minibar.hidden = !minibarWanted();
+    if (minibar.hidden) return;
+    paintMinibarClock();
+  }
+
+  /* The strip's clock is the same one the card's scrub bar reads, so the two
+     can never disagree about where in the song the wall is. */
+  function paintMinibarClock() {
+    if (!minibar || minibar.hidden) return;
+    var np = S.nowPlaying;
+    var pos = livePosition();
+    var dur = np ? np.duration : 0;
+    miniTimes.textContent = fmtTime(pos);
+    if (miniFill) miniFill.style.width = (dur ? Math.min(100, (pos / dur) * 100) : 0).toFixed(2) + '%';
   }
 
   var queueSig = null;
@@ -1263,6 +1314,7 @@
       if (lyrLeftEl) lyrLeftEl.textContent = leftText;
     }
     if (lyricsOpen) updateLyricHighlight();
+    paintMinibarClock();
   };
 
   function setVolLabel(v) {
@@ -1292,8 +1344,9 @@
     resultsHint.textContent = hint || '';
     resultsSheet.hidden = false;
     sheetUpAt = Date.now();
+    renderMinibar();
   }
-  function hideResults() { resultsSheet.hidden = true; sheetUpAt = 0; }
+  function hideResults() { resultsSheet.hidden = true; sheetUpAt = 0; renderMinibar(); }
 
   function keyOf(hit) {
     if (!hit) return null;
@@ -2385,6 +2438,9 @@
       updateLyricHighlight(true);
     });
     document.body.classList.add('lyrics-on');
+    // The words take the wall: the floating strip yields to them rather than
+    // drawing a second player over them.
+    renderMinibar();
   }
 
   function closeLyrics(userClosed) {
@@ -2393,6 +2449,7 @@
     lyricsOverlay.hidden = true;
     document.body.classList.remove('lyrics-on');
     if (userClosed) dismissedLyricsFor = S.nowPlaying && S.nowPlaying.id;
+    renderMinibar();
   }
 
   function toggleLyrics() {
@@ -2603,6 +2660,26 @@
     closeAsk();
   });
   $('#resultsClose').addEventListener('click', hideResults);
+
+  // The floating playbar's own controls: the same three commands the card's
+  // buttons send, so the strip is a second view of one player, never a second
+  // player.
+  if (minibar) {
+    $('#miniPlay').addEventListener('click', toggle);
+    $('#miniNext').addEventListener('click', function () { control({ action: 'next' }); });
+    $('#miniShuffle').addEventListener('click', function () { control({ action: 'shuffle' }); });
+    $('#miniStrip').addEventListener('click', function () {
+      // The strip exists because the card is out of sight, so tapping it is a
+      // request to bring the card back rather than to play anything.
+      if (columnEl) {
+        if (columnEl.scrollTo) columnEl.scrollTo({ top: 0, behavior: reduce ? 'auto' : 'smooth' });
+        else columnEl.scrollTop = 0;
+      }
+      hideResults();
+      renderMinibar();
+    });
+    if (columnEl) columnEl.addEventListener('scroll', renderMinibar, { passive: true });
+  }
   $('#askMicHint').addEventListener('click', function () { listenForChoice(); });
 
   // clicking a shared row for lyrics dismisses it — "unless clicked out by the user"

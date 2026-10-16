@@ -199,6 +199,35 @@
   </footer>
 </div>
 
+<!-- ================================================== FLOATING PLAYBAR -->
+<!--  The track that is playing, kept on the wall whenever the card carrying
+      the player is out of sight: the column has been scrolled, or the results
+      sheet is up. It opens when the cursor reaches it, and it steps aside for
+      the lyrics, which already carry the words and their own transport. -->
+<div class="minibar" id="minibar" hidden>
+  <div class="minibar-panel">
+    <button class="minibar-btn" id="miniShuffle" type="button" title="Shuffle" aria-label="Shuffle">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 4h4v4M20 4l-6 6M4 20l6-6M16 20h4v-4M4 4l5 5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </button>
+    <button class="minibar-btn play" id="miniPlay" type="button" title="Play or pause" aria-label="Play or pause">
+      <svg class="ic-play" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4.5v15l13-7.5z" fill="currentColor"/></svg>
+      <svg class="ic-pause" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4h4v16H7zM13 4h4v16h-4z" fill="currentColor"/></svg>
+    </button>
+    <button class="minibar-btn" id="miniNext" type="button" title="Next track" aria-label="Next track">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5v14l11-7zM18 5v14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </button>
+  </div>
+  <button class="minibar-strip" id="miniStrip" type="button" title="Back to the player" aria-label="Now playing — back to the player">
+    <span class="minibar-art" id="miniArt" aria-hidden="true">♪</span>
+    <span class="minibar-copy">
+      <span class="minibar-title" id="miniTitle"></span>
+      <span class="minibar-artist" id="miniArtist"></span>
+    </span>
+    <span class="minibar-times" id="miniTimes">0:00</span>
+  </button>
+  <span class="minibar-progress" aria-hidden="true"><i id="miniFill"></i></span>
+</div>
+
 <div class="toast" id="toast" hidden></div>
 <audio id="audio" preload="none"></audio>
 

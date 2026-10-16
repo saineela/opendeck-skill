@@ -78,6 +78,74 @@ AMBIGUOUS_MIN_SCORE = 0.2
 # console reads and drives it through the declared provider action.
 QUEUE_FILE = os.environ.get("NIX_OPENDECK_QUEUE_FILE", "/root/data/opendeck-queue.json")
 MAX_QUEUE = 100
+# When the independent queue service is running, the queue belongs to it, and
+# this worker forwards every queue request there: one queue, whether the request
+# came from the console's page or from the assistant's own tool. Setting
+# NIX_MUSIC_QUEUE_URL is what turns that on; with it unset the queue stays here,
+# exactly as it has always been.
+QUEUE_SERVICE_URL = os.environ.get("NIX_MUSIC_QUEUE_URL", "").strip()
+QUEUE_SERVICE_TIMEOUT = float(os.environ.get("NIX_MUSIC_QUEUE_TIMEOUT", "20"))
+# Where the queue service publishes its own address. NIX starts a skill worker
+# with almost no environment on purpose, so this file — not an inherited
+# variable — is how a worker finds the queue running beside it.
+QUEUE_SERVICE_FILE = os.environ.get("NIX_MUSIC_QUEUE_FILE", "/root/data/music-queue.json")
+
+
+def _queue_service_address() -> tuple[str, str]:
+    """The queue service's address and token: as configured, or as published."""
+    if QUEUE_SERVICE_URL:
+        return (QUEUE_SERVICE_URL.rstrip("/"),
+                os.environ.get("NIX_MUSIC_QUEUE_TOKEN", "").strip())
+    try:
+        with open(QUEUE_SERVICE_FILE, "r", encoding="utf-8") as handle:
+            published = json.load(handle)
+    except (OSError, ValueError, TypeError):
+        return "", ""
+    if not isinstance(published, dict):
+        return "", ""
+    url = str(published.get("url") or "").strip().rstrip("/")
+    if not url.startswith("http"):
+        return "", ""
+    return url, str(published.get("token") or "").strip()
+# The window this worker asks the service for. The service holds thousands; a
+# closed result schema caps the reply at MAX_QUEUE, so the window is what fits
+# and the page reads further windows over its own route.
+QUEUE_SERVICE_WINDOW = 100
+
+
+def _queue_service_request(method: str, path: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
+    """One call to the independent queue service.
+
+    Configured but unreachable is an error, not a silent fall back: answering
+    from this worker's own queue while another queue is playing would report a
+    line-up that is not what the speaker is following.
+    """
+    address, token = _queue_service_address()
+    if not address:
+        raise RuntimeError("The music queue service has not published an address.")
+    url = address + path
+    data = None if body is None else json.dumps(body).encode("utf-8")
+    headers = {"accept": "application/json", "accept-encoding": "identity"}
+    if data is not None:
+        headers["content-type"] = "application/json"
+    if token:
+        headers["x-nix-token"] = token
+    request = urllib.request.Request(url, data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(request, timeout=QUEUE_SERVICE_TIMEOUT) as response:
+            payload = json.loads(response.read(MAX_BODY_BYTES) or b"{}")
+    except urllib.error.HTTPError as exc:
+        detail = ""
+        try:
+            detail = str(json.loads(exc.read(4096) or b"{}").get("error") or "")
+        except Exception:
+            detail = ""
+        raise RuntimeError(detail or "The music queue service refused that request.") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"The music queue service is not reachable: {exc.reason}") from exc
+    except ValueError as exc:
+        raise RuntimeError("The music queue service sent an unreadable reply.") from exc
+    return payload if isinstance(payload, dict) else {}
 # How the queue behaves when a track ends: off stops at the last one, all wraps
 # back to the first, one repeats the track that just finished. Turned into a
 # message rather than interpolated, so the wording stays in one place.
@@ -144,6 +212,11 @@ LIKED_PLAYLIST_NAME = "Liked Music"
 LYRICS_TIMEOUT_MS = 9000
 LYRICS_MAX_LINES = 400
 LYRICS_PLAIN_CHARS = 8000
+# How far a provider's own track length may be from the playing one and still be
+# the same recording. LRCLIB's entries differ by a second or two on the same
+# pressing; a different rendition (a live take, a lyric video) differs by far
+# more, and its words are not the words of what is playing.
+LYRICS_DURATION_TOLERANCE = 4
 _LRC_STAMP_PATTERN = re.compile(r"\[(\d{1,3}):(\d{1,2})(?:[.:](\d{1,3}))?\]")
 
 BROWSER_USER_AGENT = (
@@ -253,6 +326,18 @@ def _result(action: str, message: str, **fields: Any) -> dict[str, Any]:
 
 def _text(value: Any, limit: int) -> str:
     return " ".join(str(value or "").split())[:limit]
+
+
+def _lyrics_text(value: Any, limit: int) -> str:
+    """Lyrics with their own line breaks kept.
+
+    ``_text`` folds every run of whitespace into one space, which is right for a
+    title and wrong for a body of words: a song that arrived as forty lines came
+    back as one paragraph, and the wall display - which draws one line per line -
+    showed the whole thing on a single row.
+    """
+    lines = [re.sub(r"[^\S\n]+", " ", line).strip() for line in str(value or "").splitlines()]
+    return "\n".join(line for line in lines if line)[:limit]
 
 
 def _normalized_words(text: str) -> list[str]:
@@ -884,10 +969,147 @@ class OpenDeckService:
         queue["items"] = played + ([playing] if playing is not None else []) + ordered
         queue["current_index"] = len(played) if playing is not None else -1
 
+    # ── the independent queue service ─────────────────────────────────────
+    def _service_state(self, window: int = QUEUE_SERVICE_WINDOW) -> dict[str, Any]:
+        return _queue_service_request("GET", f"/state?from=0&limit={window}")
+
+    def _service_index_of(self, arguments: dict[str, Any]) -> int:
+        """The position the service holds a named track at.
+
+        The assistant names tracks ("move Bohemian Rhapsody to the front"); the
+        service works in positions, because that is what a queue is. The name is
+        resolved here, against the queue the service actually holds.
+        """
+        state = self._service_state(2000)
+        items = state.get("queue") if isinstance(state.get("queue"), list) else []
+        wanted = self._queue_lookup(arguments)
+        needle = _text(wanted.get("title"), 300).casefold()
+        for position, item in enumerate(items):
+            if not isinstance(item, dict):
+                continue
+            if item.get("video_id") == wanted["video_id"]:
+                return position
+            if needle and needle in _text(item.get("title"), 300).casefold():
+                return position
+        raise RuntimeError(f"“{wanted['title'] or wanted['video_id']}” is not in the queue.")
+
+    def _service_playable(self, track: dict[str, Any]) -> dict[str, Any]:
+        """Resolve a track the service handed over into playable fields."""
+        resolved = self.resolve(track["video_id"])
+        meta = {
+            "video_id": resolved["video_id"] or track["video_id"],
+            "title": track.get("title") or resolved["title"],
+            "artist": track.get("artist") or _clean_artist(resolved["artist"]),
+            "album": track.get("album") or "",
+            "duration_sec": resolved["duration_sec"] or track.get("duration_sec") or 0,
+            "artwork_url": track.get("artwork_url") or resolved["artwork_url"],
+        }
+        play_url = self.play_url(resolved["stream_url"], meta)
+        self._remember_track(meta)
+        return {**meta, "mime_type": resolved["mime_type"], "play_url": play_url}
+
+    def _service_result(self, reply: dict[str, Any], message: str, *,
+                        playable: dict[str, Any] | None = None) -> dict[str, Any]:
+        """The service's reply in this worker's own result shape."""
+        items = reply.get("queue") if isinstance(reply.get("queue"), list) else []
+        index = reply.get("index")
+        return {
+            **(playable or {}),
+            "queue": items[:MAX_QUEUE],
+            "queue_index": index if isinstance(index, int) else -1,
+            "count": int(reply.get("total") if reply.get("total") is not None else len(items)),
+            "shuffle": bool(reply.get("shuffle")),
+            "repeat": reply.get("repeat") if reply.get("repeat") in REPEAT_MODES else "off",
+            "message": message,
+        }
+
+    def _queue_through_service(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        """Forward one queue request to the independent queue service."""
+        op = arguments["op"]
+        if op == "list":
+            reply = self._service_state()
+            total = int(reply.get("total") or 0)
+            message = f"{total} track(s) queued." if total else "The queue is empty."
+            return self._service_result(reply, message)
+        if op in {"remove", "front", "next_up"} and arguments.get("index") is None:
+            arguments = {**arguments, "index": self._service_index_of(arguments)}
+        if op == "add":
+            track = self._queue_lookup(arguments)
+            reply = _queue_service_request("POST", "/add", {"tracks": [track]})
+            position = int(reply.get("total") or 0)
+            # The track that was queued travels back (the result schema carries
+            # its fields), so a reply about an add names what was added.
+            return self._service_result(
+                reply, f"Queued “{track['title'] or track['video_id']}” at position {position}.",
+                playable={key: track[key] for key in (
+                    "video_id", "title", "artist", "album", "duration_sec", "artwork_url")
+                    if track.get(key) is not None})
+        if op in {"play", "next"}:
+            if op == "play":
+                state = self._service_state(2000)
+                items = state.get("queue") if isinstance(state.get("queue"), list) else []
+                index = int(arguments["index"])
+                if index >= len(items):
+                    raise RuntimeError("That queue position does not exist.")
+                reply = _queue_service_request("POST", "/ops", {"op": "set_index", "index": index})
+                reply = {**reply, "queue": items, "index": index, "total": state.get("total")}
+                track = items[index]
+            else:
+                reply = _queue_service_request("POST", "/ops", {"op": "next",
+                                                              "auto": bool(arguments.get("auto"))})
+                track = reply.get("track") if isinstance(reply.get("track"), dict) else None
+                if not reply.get("ok") or not track:
+                    return self._service_result(reply, reply.get("message") or "The queue has no next track to play.")
+            playable = self._service_playable(track)
+            total = int(reply.get("total") or 0)
+            index = int(reply.get("index") or 0)
+            return self._service_result(
+                reply,
+                f"Playing queued track {index + 1} of {total}: "
+                f"“{playable['title'] or playable['video_id']}”.",
+                playable=playable)
+        body = {"op": op}
+        for key in ("index", "to", "on", "mode"):
+            if key in arguments and arguments[key] is not None:
+                body[key] = arguments[key]
+        if op == "clear":
+            state = self._service_state(2000)
+            removed = int(state.get("total") or 0)
+            reply = _queue_service_request("POST", "/ops", body)
+            return self._service_result(
+                reply, f"Cleared {removed} track(s) from the queue." if removed else "The queue was already empty.")
+        reply = _queue_service_request("POST", "/ops", body)
+        message = {
+            "remove": "Removed from the queue.",
+            "move": "Queue reordered.",
+            "front": "Moved to the front of the queue.",
+            "next_up": "Playing next.",
+            "shuffle": "Shuffling the queue." if reply.get("shuffle") else "Playing the queue in order.",
+            "repeat": REPEAT_MESSAGES.get(reply.get("repeat"), "Repeat updated."),
+        }.get(op, "Queue updated.")
+        return self._service_result(reply, message)
+
     def queue(self, arguments: dict[str, Any]) -> dict[str, Any]:
         op = arguments["op"]
+        if _queue_service_address()[0]:
+            # The service owns the queue: this worker's own file is left
+            # untouched, so there is never a second line-up to disagree with it.
+            return self._queue_through_service(arguments)
         queue = self._queue_load()
         items = queue["items"]
+        if op == "resolve":
+            # Read-only: turn a bare video id (or a name) into a track record
+            # without queueing or playing it. The independent queue service asks
+            # this for each track whose metadata never arrived, one at a time and
+            # at whatever rate it decides — the queue itself is not touched here,
+            # so resolving can never reorder or start anything.
+            track = self._queue_lookup(arguments)
+            return {"queue": items, "queue_index": queue["current_index"], "count": len(items),
+                    "video_id": track["video_id"], "title": track["title"],
+                    "artist": track["artist"], "album": track["album"],
+                    "duration_sec": track["duration_sec"], "artwork_url": track["artwork_url"],
+                    **self._queue_state(queue),
+                    "message": f"Resolved “{track['title'] or track['video_id']}”."}
         if op == "list":
             return {"queue": items, "queue_index": queue["current_index"], "count": len(items),
                     **self._queue_state(queue),
@@ -1510,12 +1732,24 @@ class OpenDeckService:
         return lines[:LYRICS_MAX_LINES]
 
     def lyrics(self, arguments: dict[str, Any]) -> dict[str, Any]:
-        """Synced lyrics for a track, fetched through OpenDeck's proxy.
+        """Lyrics for a track, fetched through OpenDeck's proxy.
 
-        Tries LRCLIB's exact match first (title + artist + duration), then its
-        search endpoint and keeps the closest duration, exactly like OpenDeck's
-        own client does. Returns no lines when the provider has nothing: an
-        instrumental or unmatched track is a normal result, not an error.
+        LRCLIB matches on names and lengths, never on a video id, so the track is
+        established first: the caller's own title/artist/album/duration when it
+        named a track, and the id resolved through the player when the name and
+        length are missing (an id-only request, or the console passing one on).
+
+        The provider is then asked for an exact match (title + artist + length,
+        which is what its /api/get needs), and its search endpoint is used as the
+        fallback. Every candidate has to be *this* track before its words are
+        returned — the name has to be the one asked for and the length has to be
+        within ``LYRICS_DURATION_TOLERANCE`` — because a near-miss here is not a
+        missing answer, it is another song's words shown as this one's.
+
+        A track the provider only has words (not timings) for answers with
+        ``lyrics_timing: "plain"`` and the text in ``lyrics_plain``: the page and
+        the wall display both render that, and telling a person "no lyrics" about
+        a song whose words are sitting right there is not an answer.
         """
         video_id = _text(arguments.get("video_id"), 64)
         title = _text(arguments.get("title"), 300)
@@ -1538,17 +1772,16 @@ class OpenDeckService:
                 raise ValueError(
                     "lyrics needs a track title or a video_id: nothing has been played yet."
                 )
-        if not title:
-            # Only a video_id was supplied: resolve it so the provider can be
-            # queried by name, which is what LRCLIB matches on.
+        if video_id and (not title or not duration):
+            # The provider is queried by name and matches on length, so a request
+            # that arrives with only an id (or without a length) is resolved here
+            # rather than guessed at.
             resolved = self.resolve(video_id)
-            title = resolved["title"]
+            title = title or resolved["title"]
             artist = artist or _clean_artist(resolved["artist"])
             duration = duration or resolved["duration_sec"]
         queries = [{"track_name": title, "artist_name": artist}] if artist else []
         queries.append({"track_name": title})
-        best: dict[str, Any] | None = None
-        best_delta: float | None = None
         candidates: list[dict[str, Any]] = []
         for query in queries:
             params = dict(query)
@@ -1556,6 +1789,7 @@ class OpenDeckService:
                 params["album_name"] = album
             if duration:
                 params["duration"] = str(duration)
+            match = None
             try:
                 payload = self._proxy(
                     "https://lrclib.net/api/get?" + urllib.parse.urlencode(params),
@@ -1565,16 +1799,19 @@ class OpenDeckService:
             except RuntimeError:
                 payload = b"{}"
             try:
-                match = json.loads(payload.decode("utf-8", "replace"))
+                loaded = json.loads(payload.decode("utf-8", "replace"))
             except json.JSONDecodeError:
-                match = None
-            if isinstance(match, dict) and match.get("syncedLyrics"):
-                candidates.append(match)
+                loaded = None
+            if isinstance(loaded, dict) and (loaded.get("syncedLyrics") or loaded.get("plainLyrics")):
+                match = loaded
+                candidates.append(loaded)
+            if match is not None and match.get("syncedLyrics"):
+                # An exact match with timings is the best this provider offers: no
+                # search can improve on it, and each one costs a round trip.
                 break
-            search_params = dict(query)
             try:
                 listing = self._proxy(
-                    "https://lrclib.net/api/search?" + urllib.parse.urlencode(search_params),
+                    "https://lrclib.net/api/search?" + urllib.parse.urlencode(query),
                     method="GET",
                     timeout_ms=LYRICS_TIMEOUT_MS,
                 )
@@ -1586,27 +1823,44 @@ class OpenDeckService:
                 continue
             if isinstance(found, list):
                 candidates.extend(item for item in found if isinstance(item, dict))
+        best: dict[str, Any] | None = None
+        best_key: tuple[int, float, int] | None = None
         for candidate in candidates:
-            if not candidate.get("syncedLyrics"):
+            synced = bool(candidate.get("syncedLyrics"))
+            if not synced and not candidate.get("plainLyrics"):
                 continue
-            delta = None
-            if duration and isinstance(candidate.get("duration"), (int, float)):
-                delta = abs(float(candidate["duration"]) - duration)
-            if delta is not None and delta > 2:
+            if not _lyrics_name_matches(title, candidate.get("trackName") or candidate.get("name")):
                 continue
-            if best is None or (delta is not None and (best_delta is None or delta < best_delta)):
-                best, best_delta = candidate, delta
+            delta: float | None = None
+            if isinstance(candidate.get("duration"), (int, float)):
+                if not duration:
+                    delta = 0.0
+                else:
+                    delta = abs(float(candidate["duration"]) - duration)
+                    if delta > LYRICS_DURATION_TOLERANCE:
+                        continue
+            # Timed words first, then the closest length (a candidate with no
+            # length at all is the last resort), then the likelier artist. The
+            # order the provider returned is what settles the rest.
+            key = (
+                0 if synced else 1,
+                delta if delta is not None else float("inf"),
+                0 if _lyrics_name_matches(artist, candidate.get("artistName")) else 1,
+            )
+            if best_key is None or key < best_key:
+                best, best_key = candidate, key
         if best is None:
             return {"lyrics": [], "lyrics_plain": "", "lyrics_timing": "none", "lyrics_source": "LRCLIB",
                     "count": 0}
         lines = self.parse_synced_lyrics(best.get("syncedLyrics") or "")
         if not lines:
-            return {"lyrics": [], "lyrics_plain": _text(best.get("plainLyrics"), LYRICS_PLAIN_CHARS),
-                    "lyrics_timing": "plain" if best.get("plainLyrics") else "none",
+            plain = _lyrics_text(best.get("plainLyrics"), LYRICS_PLAIN_CHARS)
+            return {"lyrics": [], "lyrics_plain": plain,
+                    "lyrics_timing": "plain" if plain else "none",
                     "lyrics_source": "LRCLIB", "count": 0}
         return {
             "lyrics": lines,
-            "lyrics_plain": _text(best.get("plainLyrics"), LYRICS_PLAIN_CHARS),
+            "lyrics_plain": _lyrics_text(best.get("plainLyrics"), LYRICS_PLAIN_CHARS),
             "lyrics_timing": "synced",
             "lyrics_source": "LRCLIB",
             "count": len(lines),
@@ -2458,6 +2712,36 @@ def _lyrics_subject(text: str) -> str:
     if not value or _LYRICS_SELF_PATTERN.fullmatch(value):
         return ""
     return value
+
+
+def _lyrics_name_key(value: Any) -> str:
+    """A track name folded to compare: case, punctuation and accents of spacing."""
+    return " ".join(re.sub(r"[^\w\s]+", " ", str(value or "").casefold()).split())
+
+
+def _lyrics_name_matches(title: Any, candidate: Any) -> bool:
+    """Whether a provider's track name is the one that was asked for.
+
+    The catalog titles a track the way YouTube does — "Post Malone - Better Now",
+    "Bohemian Rhapsody (Official Video)" — while LRCLIB titles it the way the
+    release does. So the two are compared as folded words: equal, one inside the
+    other, or sharing most of the shorter one. Anything less is a different song,
+    and its words must never be shown for this one.
+    """
+    wanted = _lyrics_name_key(title)
+    found = _lyrics_name_key(candidate)
+    if not wanted or not found:
+        return False
+    if wanted == found:
+        return True
+    if wanted in found or found in wanted:
+        return True
+    wanted_words = set(wanted.split())
+    found_words = set(found.split())
+    shorter = wanted_words if len(wanted_words) <= len(found_words) else found_words
+    if not shorter:
+        return False
+    return len(wanted_words & found_words) / len(shorter) >= 0.75
 
 
 def _clean_artist(value: Any) -> str:

@@ -3,7 +3,7 @@
   "kind": "nix-skill",
   "id": "opendeck",
   "name": "OpenDeck",
-  "version": "1.22.0",
+  "version": "1.23.0",
   "description": "Play the music in a self-hosted OpenDeck server: search, play a requested song on the unit, keep a shuffle/repeat queue, like or file the playing track, and fill the console's Music page with now-playing, the queue and synchronized lyrics. Ships the PUCA Panel: the wall display, where an unclear request becomes a choice rather than a guess, the music cards are sized to be read across a room (the player is not), and a wall left on refreshes itself onto a new panel.",
   "assistant_summary": "You are OpenDeck, the user's music service. Actions: search (query), now_playing, library (kind: playlists/playlist/likes/history/frequent/stats), play (query or video_id), queue (op: add/list/remove/clear/next/play/move/front/next_up/shuffle/repeat/add_range), save (like/unlike/playlist_create/playlist_add), lyrics. 'my playlists' is kind 'playlists' (artwork_url), 'my liked songs' 'likes', 'my history' 'history', 'my most played' / 'what do I play most' 'frequent' (each track has its play count). Queue: 'queue <song>' / 'add <song> to my queue' are 'add'; \"what's in my queue\" is 'list'; 'play <song> next/first' are 'next_up'/'front'; 'play the next queued track' is 'next'; 'remove <song> from the queue' is 'remove'; 'clear the queue' is 'clear'; shuffle/repeat are 'shuffle'/'repeat' (omit to toggle). 'like this song' / 'add this to my liked music' are 'like'; 'add this to <playlist>' is 'playlist_add' with name=<playlist> (found or created); 'this song' is the one playing, so no video_id. Never add to Liked Music (\"LM\"); that is 'like'. \"what's playing\" is 'now_playing'; 'search for <song>' is 'search', not 'play'; use 'play' only when asked. It also fills the Music page.",
   "category": "Music",
@@ -358,7 +358,8 @@
                   "next_up",
                   "shuffle",
                   "repeat",
-                  "add_range"
+                  "add_range",
+                  "resolve"
                 ]
               },
               "query": {
@@ -377,12 +378,12 @@
               "index": {
                 "type": "integer",
                 "minimum": 0,
-                "maximum": 99
+                "maximum": 4999
               },
               "to": {
                 "type": "integer",
                 "minimum": 0,
-                "maximum": 99
+                "maximum": 4999
               },
               "on": {
                 "type": "boolean"
@@ -794,7 +795,14 @@
       "title": "Music",
       "script": "ui/music.js",
       "styles": [
-        "ui/music.css"
+        "ui/music.css",
+        "PUCA-Panel/fonts.css"
+      ],
+      "assets": [
+        "PUCA-Panel/fonts/outfit-latin.woff2",
+        "PUCA-Panel/fonts/outfit-latin-ext.woff2",
+        "PUCA-Panel/fonts/baloo2-latin.woff2",
+        "PUCA-Panel/fonts/nunito-latin.woff2"
       ]
     },
     "media": {
@@ -824,6 +832,16 @@
           "arguments": {
             "action": "queue",
             "op": "list"
+          },
+          "limits": {
+            "max_tracks": 5000,
+            "max_batch": 200,
+            "window": 50,
+            "prefetch": 25,
+            "prefetch_keep": 200,
+            "resolves_per_minute": 60,
+            "resolve_concurrency": 2,
+            "cache_seconds": 600
           }
         },
         "lyrics": {
